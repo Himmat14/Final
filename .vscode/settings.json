@@ -1,0 +1,8 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}\\satellite_deadband\\satellite_deadband\\.venv\\Scripts\\python.exe",
+    "code-runner.executorMap": {
+        "python": "& \"$workspaceRoot\\satellite_deadband\\satellite_deadband\\.venv\\Scripts\\python.exe\" -u $fullFileName"
+    },
+    "code-runner.fileDirectoryAsCwd": true,
+    "code-runner.runInTerminal": true
+}
