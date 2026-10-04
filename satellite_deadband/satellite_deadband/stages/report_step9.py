@@ -241,15 +241,15 @@ def _draw_errors(ax, out, actual, t0):
     days = (actual - t0) / 86400
     for name, result in out.items():
         errors_min = result["errors_s"] / 60
-        ax.plot(days, errors_min, ".-", ms=4, color=METHOD_COLORS[name],
+        ax.plot(days, errors_min, ".-", ms=4, color=METHOD_COLORS[name], ls="--" if name == "random forest" else "-",
                 label=f"{name} (mean |err| {np.nanmean(np.abs(errors_min)):.0f} min)")
     ax.axhline(0, color="black", lw=0.8)
     ax.set(xlabel="days ahead (forecast from day 40)", ylabel="predicted - true onset [min]",
            title="Forecast timing error, burn by burn")
-    ax.text(0.98, 0.97, "periodic baseline wins only because drag is constant\n"
-                        "in this simulation (every cycle identical)",
-            transform=ax.transAxes, fontsize=7, color=SLATE, ha="right", va="top")
-    ax.legend(fontsize=7)
+    ax.text(0.02, 0.03, "SINDy and random forest learn the same coast rate (the cluster mean of da/dt);\n"
+                        "its 2.5e-4 error shortens every coast by ~30 s and adds up over 92 cycles",
+            transform=ax.transAxes, fontsize=7, color=SLATE, ha="left", va="bottom")
+    ax.legend(fontsize=7, loc="upper left")
 
 
 def horizon_errors(out, actual, t0):
@@ -261,7 +261,8 @@ def horizon_errors(out, actual, t0):
 
 def _draw_horizon_errors(ax, table):
     for name, errors in table.items():
-        ax.loglog(HORIZONS_DAYS, np.maximum(errors, 1e-2), "o-", color=METHOD_COLORS[name], label=name)
+        ax.loglog(HORIZONS_DAYS, np.maximum(errors, 1e-2), "o-", color=METHOD_COLORS[name], label=name,
+                  ls="--" if name == "random forest" else "-")      # dashed: it sits on top of SINDy
     ax.set(xticks=HORIZONS_DAYS, xlabel="forecast horizon [days]", ylabel="mean |onset error| [min]",
            title="Forecast accuracy vs horizon")
     ax.set_xticklabels([str(h) for h in HORIZONS_DAYS])

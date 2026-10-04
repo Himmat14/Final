@@ -1,9 +1,10 @@
 """
 Report step 5: the deadband controller as a dynamic model, and the sigmoid (tanh) thruster.
 
-The existing smooth-deadband stage is run first (Figure 1 of the proposal over 8 days, tanh
-switches, one burn up close, slope sweep, J2 mean vs osculating SMA, integrator step sizes).
-This step adds the 400-day picture (long_run.controlled_run and its drag-only twin):
+The smooth-deadband stage (main.py stage "smooth_deadband", run right after this one) adds Figure 1
+of the proposal over days 0-10, the tanh switches, one burn up close, the slope sweep, J2 mean vs
+osculating SMA and the integrator step sizes to the same folder. This step adds the 400-day picture
+(long_run.controlled_run and its drag-only twin):
 
 Figures (outputs/report/step5_deadband/)
     step5_long_term             400 days: mean SMA (controlled vs drag-only), miss distance, and
@@ -24,7 +25,6 @@ from deadband.constants import (DU, METRES, PERIOD, SAMPLE_STEP_S, SECONDS, SMOO
 from deadband.controller import simulate_deadband
 from deadband.smooth_controller import (default_runs, mean_sma_km_series, rising_switch, rising_switch_slope,
                                         simulate_smooth_deadband, smooth_initial_state, throttle)
-from . import smooth_deadband_stage
 from .common import AMBER, GREEN, NAVY, PURPLE, RUST, SLATE
 from .report_common import panel_label, report_style, save, step_dir
 
@@ -221,7 +221,6 @@ def _draw_horizon_metrics(ax, rows):
 # ---------------------------------------------------------------------------
 def run(sim, out_dir):
     folder = step_dir(out_dir, "step5_deadband")
-    smooth_results = smooth_deadband_stage.run(sim, folder)
     controlled, drag_only = default_runs()
     profiles = thrust_profiles()
     fuel = fuel_vs_band()
@@ -247,4 +246,4 @@ def run(sim, out_dir):
             panel_label(ax, letter)
         save(fig, folder, "step5_summary.png", suptitle="Step 5: deadband control with a smooth (tanh) thruster, 8 and 400 days")
 
-    return dict(report_step5=dict(fuel_vs_band=fuel, long_term_by_horizon=horizon_rows), **smooth_results)
+    return dict(report_step5=dict(fuel_vs_band=fuel, long_term_by_horizon=horizon_rows))

@@ -22,9 +22,10 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 
-from deadband.classifiers import (MODELS, SG_WINDOW, build_features, detection_dataset, evaluate, fit_gmm,
+from deadband.classifiers import (MODELS, build_features, detection_dataset, evaluate, fit_gmm,
                                   noisy_features, add_noise, REFERENCE_NOISE)
 from deadband.long_run import TRAIN_DAYS
+from deadband.settings import tuned
 from .common import AMBER, GREEN, NAVY, PURPLE, RUST
 from .report_common import panel_label, report_style, save, step_dir
 
@@ -83,7 +84,7 @@ def sampling_step_sweep(dataset, scale=1.0):
     for stride in STRIDES:
         coarse = dataset.every(stride)
         r, v = add_noise(coarse, REFERENCE_NOISE[0] * scale, REFERENCE_NOISE[1] * scale)
-        window = max(7, SG_WINDOW // stride | 1)
+        window = max(7, tuned("sg_window") // stride | 1)       # the tuned window, in samples at the coarser step
         rows.append(dict(step_s=coarse.step_s, window_s=window * coarse.step_s,
                          f1=_f1(evaluate(coarse, build_features(r, v, coarse.step_s, window=window)))))
     return rows
@@ -110,7 +111,7 @@ def _draw_false_events(ax, rows):
     ax.set_yscale("symlog", linthresh=1)
     ax.set_ylim(bottom=0)
     ax.set(xticks=x, xticklabels=[f"{s:g}" for s in scales],
-           xlabel="noise (x 0.1 m / 0.5 mm/s)", ylabel="false burn events (TEST, 6 days)", title="False alarms vs noise")
+           xlabel="noise (x 0.1 m / 0.5 mm/s)", ylabel=f"false burn events (TEST, {SWEEP_TEST_DAYS} days)", title="False alarms vs noise")
 
 
 def _draw_heatmap(ax, rows):

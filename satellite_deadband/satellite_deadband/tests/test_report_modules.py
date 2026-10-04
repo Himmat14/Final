@@ -20,8 +20,9 @@ class RegressionTests(unittest.TestCase):
         cls.positions = propagate(CD_TRUE, cls.t)[0:3]
 
     def test_mu_and_cd_from_clean_positions(self):
-        self.assertAlmostEqual(fit_mu(self.positions, self.h) / MU, 1.0, places=4)
-        self.assertAlmostEqual(fit_cd(self.positions, self.h) / CD_TRUE, 1.0, places=2)
+        # 5-min data: the tuned order (4, chosen for 1-min data) is not the best here, so ask for order 6
+        self.assertAlmostEqual(fit_mu(self.positions, self.h, order=6) / MU, 1.0, places=4)
+        self.assertAlmostEqual(fit_cd(self.positions, self.h, order=6) / CD_TRUE, 1.0, places=2)
 
     def test_energy_method_beats_fd_under_noise(self):
         noisy = add_position_noise(self.positions, 1.0, seed=0)

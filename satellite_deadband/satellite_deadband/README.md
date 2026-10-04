@@ -18,55 +18,133 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows   (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 
-python main.py                    # run everything -> ./outputs  (about 30 s)
+python main.py                    # run everything -> ./outputs  (first run ~20 min to build the 400-day caches)
 python main.py --list             # see the stages
-python main.py --stages deadband gmm --out my_results
+python main.py --stages step6 gmm --out my_results
 python -m unittest discover tests # quick sanity checks
 ```
 
-`main.py` writes 24 figures plus `results.json` (every number quoted in the Week 4 deck) to
-the output folder. Nothing is hand-edited.
+`main.py` runs 21 stages (step 0 tuning first) (the report steps 1-9 plus the workstream stages) and writes every figure
+into `outputs/report/stepN_*/` and every number into `outputs/results.json`. Nothing is hand-edited.
+
+## Step 0: bias-variance tuning (runs first, results carried forward)
+
+`python main.py` starts with the `tuning` stage (`deadband/tuning.py`, figures in
+`outputs/report/step0_tuning/`). Each adjustable setting is repeated over many noise seeds or bootstrap
+re-fits, and its error is split into **bias^2 + variance = MSE**. The setting with the lowest MSE is
+saved to `.cache/tuned_settings_v1.json`. Every later step reads it through `deadband/settings.py`
+(`tuned("...")`), so the optimum is carried forward automatically. Delete that file or run
+`python main.py --retune` to tune again.
+
+| Setting | Default | Tuned | How it was chosen |
+|---|---|---|---|
+| `fd_order` (steps 2-4) | 6 | 4 | MSE of cd from 10 m noisy 1-min positions (order 4 also wins on clean 1-min data) |
+| `sg_window`, `sg_order` (steps 6-9) | 21, 5 | 61, 5 | MSE of the classifier's v' (coast and burn weighted equally) |
+| `derivative_method` (steps 6-9) | Savitzky-Golay | Savitzky-Golay | walk-forward / walk-backward event F1 (below) |
+| `gmm_components` (all GMMs) | 4 | 4 | bias^2 + variance of P(burn \| x) (Brier score), one-standard-error rule |
+| `sma_window` (step 9) | 41 | 21 | MSE of the mean-SMA derivative |
+| `stlsq_threshold` (step 9) | 0.05 | 0.05 | MSE of the SINDy law's predicted da/dt on TEST (the sparsest law within 1%) |
+
+**Choosing the GMM's derivative method by walk-forward / walk-backward testing.** For each way of
+differentiating the velocity data (Savitzky-Golay, central 2nd/4th/6th/8th order), a GMM is trained on
+a 40-day window and tested out of sample over the 15, 30, 60, 120, 240 and 360 days that follow it
+(**forward**: train on days 0-40) or that come before it (**backward**: train on days 360-400). This is
+done at 0.25, 0.5 and 1 x the reference noise. At the reference noise only Savitzky-Golay keeps
+F1 = 1.0 in all 12 periods. The central differences already fail at 0.5 x (8th order even at 0.25 x),
+because they amplify the noise.
+
+## Figure style
+
+Every figure goes through `stages/common.save_figure`:
+* one font (DejaVu Sans, also for maths text) and fixed sizes for titles, labels, ticks and legends;
+* the colour-blind-safe Okabe-Ito palette;
+* major plus light minor gridlines;
+* different line styles whenever a chart has three or more solid lines.
+
+Charts missing a title or axis label are listed in `outputs/figure_label_check.txt`.
+
+## One data source for everything
+
+Every stage, including the Week 2-5 workstream stages, reads the same cached 400-day simulations
+in `deadband/long_run.py`:
+
+| Data | Used by |
+|---|---|
+| `natural_run()`: every force, realistic drag, 1-min samples | steps 1-4, `neural_net`, `inverse`, `spectral` |
+| `controlled_run()`: smooth tanh deadband, 6-s samples (102 burns) | steps 5-9, `deadband`, `detection`, `gmm`, `heldout` |
+| its first 10-day chunk (`smooth_controller.default_runs`) | `smooth_deadband`, `derivative_gmm` |
+
+The settings are shared as well:
+* Train/test split: TRAIN = days 0-40 and TEST = days 40+ (`TRAIN_DAYS`).
+* Noise: in metres and mm/s, with the step 6 reference of 0.1 m and 0.5 mm/s.
+* Scoring: per burn **event**. The classifier features are [log |v' residual|, along-track v' residual].
+
+The old Week 4 run (8 orbits, impulsive raise + trim burns, demo drag `CD_TRUE`, 70/30 split, noise
+as a fraction of the signal) is no longer used by any stage. `deadband/controller.py` stays only
+for step 5's impulsive vs smooth comparison.
 
 ## Layout
 
 ```
-main.py                      single entry point
+main.py                      single entry point (python main.py --list shows the 20 stages in run order)
 deadband/                    the library (no plotting)
     constants.py             constants, unit system (DU/TU/VU), orbit + controller settings
-    physics.py               accelerations, osculating SMA, propagation
-    controller.py            state-dependent raise + trim deadband controller
-    inverse.py               fit cd / J2 to trajectory data (Levenberg-Marquardt)
-    spectral.py              FFT / periodogram robustness study
-    neural_net.py            long-horizon MLP extrapolation test
-    evidence.py              burn evidence signals (log |delta SMA|, log |delta speed|)
-    metrics.py               sensitivity / precision / balanced accuracy
-    detectors.py             five basic 1-D detectors + noise sweep
-    gmm_2d.py                2-feature GMM and density / ellipse geometry
-    method_comparison.py     GMM vs k-means regions, precision/recall, cadence sweep
-    heldout_models.py        60-orbit train/test split, more models, Gaussian Process
-stages/                      one module per workstream: run -> save figures -> return numbers
-tests/test_core.py           sanity checks on the physics and controller
+    long_run.py              the cached 400-day simulations every stage uses
+    physics.py, perturbations.py   accelerations (gravity, J2, drag, Moon, Sun, SRP) and propagation
+    smooth_controller.py     the tanh deadband controller (7th state = thruster on/off)
+    controller.py            the Week 4 impulsive controller (step 5 comparison only)
+    regression.py, kalman.py, inverse.py   learning cd, J2, ... from positions (steps 2-4)
+    noise_models.py          realistic multi-frequency noise (step 3b)
+    spectral.py, force_spectroscopy.py     FFT / J2 SNR and "force spectroscopy" (step 4)
+    derivative_detection.py  derivative methods, derivative GMM, events and event scores
+    classifiers.py           step 6-7 dataset, features, models, evaluation
+    detectors.py             five basic detectors on the step 6 features (workstream C/G)
+    gmm_2d.py                2-feature GMM, burn probability, density / ellipse geometry
+    method_comparison.py     GMM vs k-means decision regions, clean vs noisy
+    heldout_models.py        seven detectors on held-out days, GP coast-curve anomaly detector
+    neural_net.py            time-indexed MLP vs a straight line (natural run)
+    burn_folding.py, sindy.py   repetition / GP thrust law (step 8), SINDy / BINDy (step 9)
+stages/                      one module per stage: run -> save figures -> return numbers
+tests/                       sanity checks (python -m unittest discover tests)
 ```
 
-| Stage (`--stages`) | Workstream | Figures |
-|---|---|---|
-| `deadband` | B: controller fix | `deadband_state_dependent`, `deadband_raise_trim_dv` |
-| `inverse` | E: cd, cd + J2 | `inverse_cd_sweep` |
-| `detection` | C/G: basic detectors | `detect_*`, `activation_timeline`, `jump_signal_histograms`, `methods_timeline_comparison`, `cadence_detection_sweep`, `precision_recall_noise` |
-| `neural_net` | D | `nn_long_horizon` |
-| `spectral` | A | `spectral_*` |
-| `gmm` | C/G extended | `gmm_*`, `decision_regions_grid`, `orbit_map_detections` |
-| `heldout` | C/G further extended | `traintest_split_timeline`, `clearer_cluster_comparison`, `gp_*`, `method_comparison_bars` |
+| Stage (`--stages`) | Runs after | Folder | Figures |
+|---|---|---|---|
+| `neural_net` | step 2 | `step2_regression` | `nn_long_horizon`, `nn_horizon_errors` |
+| `inverse` | step 3 | `step3_drag_noise` | `inverse_cd_sweep`, `inverse_cost_surface_3d`, `inverse_cost_contours` |
+| `spectral` | step 4 | `step4_spectral_kalman` | `spectral_snr_vs_*`, `spectral_periodogram_examples`, `spectral_snr_surface_3d`, `spectral_waterfall_3d` |
+| `smooth_deadband` | step 5 | `step5_deadband` | `smooth_*` (Figure 1, switches, J2 mean vs osculating SMA, ...) |
+| `deadband` | step 5 | `step5_deadband` | `deadband_state_dependent`, `deadband_raise_trim_dv`, `deadband_hysteresis_3d` |
+| `derivative_gmm` | step 6 | `step6_classification` | `deriv_*` (r'' / v' GMM, five derivative methods, Week 4 features, cadence sweep) |
+| `gmm` | step 6 | `step6_classification` | `gmm_density_surface_3d`, `gmm_burn_probability_3d`, `gmm_phase_space_3d`, `gmm_orbit_weighting_3d`, `gmm_scatter_3d`, `gmm_contour_ellipses`, `decision_regions_grid`, `orbit_map_detections` |
+| `heldout` | step 6 | `step6_classification` | `traintest_split_timeline`, `clearer_cluster_comparison`, `gp_phase_fold`, `gp_phase_fold_3d`, `gp_zscore_timeline`, `method_comparison_bars` |
+| `detection` | step 7 | `step7_robustness` | `detect_*`, `precision_recall_noise`, `cadence_detection_sweep`, `activation_timeline`, `jump_signal_histograms`, `methods_timeline_comparison` |
+
+### 3D figures
+
+| Figure | What it shows |
+|---|---|
+| `gmm_density_surface_3d` | the fitted mixture density over the feature plane, plus a zoom on the burn component |
+| `gmm_burn_probability_3d` | P(burn \| x): 0 over the coast, a cliff up to 1 at the burn component |
+| `gmm_phase_space_3d` | the phase space (mean SMA, d(mean SMA)/dt, along-track acceleration), each sample coloured by its GMM weight P(burn \| x) |
+| `gmm_orbit_weighting_3d` | the orbit in space around a TEST burn, coloured by P(burn \| x) |
+| `deadband_hysteresis_3d` | the controller's hysteresis loop in (mean SMA, rate, on/off state) |
+| `inverse_cost_surface_3d` | the whole-trajectory cost over (cd, J2) |
+| `spectral_snr_surface_3d` | J2 SNR over (sampling step x noise) |
+| `spectral_waterfall_3d` | the spectrum near 2 cycles/orbit vs record length |
+| `gp_phase_fold_3d` | every coast arc side by side |
+| `gmm_scatter_3d` | time + both features |
 
 ## Conventions
 
 * The simulation is **non-dimensional**: length unit `DU` = Earth radius, time unit `TU` =
   1 / Earth spin rate. Convert with `to_hours`, `to_minutes`, `from_hours`, `from_minutes`
   in `deadband/constants.py`. Names ending in `_km`, `_ms`, `_hours` are dimensional.
-* The controller has **one trigger** (osculating SMA <= lower edge) and fires a raise burn
-  then a small opposing trim burn at the same instant. No timers.
-* Burn detectors work on `log(|jump| + eps)`; a Gaussian mixture on the raw jumps collapses.
-* Held-out scores use a **chronological** split (first 70% train, last 30% test).
+* The controller watches the **mean SMA**: the energy including the J2 potential. Its on/off state
+  is a 7th state variable with tanh switches (hysteresis, no timers).
+* Detectors work on `log |unmodelled acceleration|`, because a Gaussian mixture on the raw values collapses.
+  A burn component must sit 3 coast standard deviations above the coast mean.
+* All scores use a **chronological** split (TRAIN days 0-40) and are counted per burn **event**.
 
 ## Week 5 additions
 
@@ -100,8 +178,6 @@ of `deadband/constants.py`.
 
 ### Week 5 talk configuration
 
-* `main.py` runs only `spectral`, `smooth_deadband` and `derivative_gmm`. The other Week 4
-  stages are commented out in `STAGES`; uncomment a line to bring one back. Their code is unchanged.
 * Every Week 5 plot and the GMM detector sample the state every `SAMPLE_STEP_MIN = 0.1` minutes
   (6 s; `deadband/constants.py`). The one exception is the solver step-size plot.
 * The GMM inputs are r and v taken straight from the state vector, finite-differenced.
@@ -109,27 +185,75 @@ of `deadband/constants.py`.
   than 10 samples (1 min) are dropped, so single points are never detections. Performance is
   scored per event only: true burns flagged, false events, precision / recall / F1.
 * The spectral SNR now takes its noise floor from 0-6 cycles/orbit only
-  (`BACKGROUND_MAX_CYCLES_PER_ORBIT` in `stages/spectral_stage.py`). Without that, a 0.1 min
+  (`BACKGROUND_MAX_CYCLES_PER_ORBIT` in `stages/report_step4.py`, shared by `spectral_stage.py`). Without that, a 0.1 min
   cadence fills the median with high-frequency finite-difference noise and the SNR wrongly
   collapses.
 
 ## Report figures (nine steps)
 
-`python main.py` now runs nine report stages. Each one writes its step-by-step figures and a
-six-panel `stepN_summary.png` into `outputs/report/stepN_<topic>/`. The whole run takes about 9
-minutes. The first run also builds a cached 20-day dataset in `.cache/`, which takes about 1 minute.
+`python main.py` runs nine report stages. Each one writes its step-by-step figures and a
+six-panel `stepN_summary.png` into `outputs/report/stepN_<topic>/`.
+
+### 400-day data (`deadband/long_run.py`)
+
+Every step now works on **400-day** simulations, built once and cached in `.cache/*.npz`
+(about 500 MB in total; the first run takes roughly 20 minutes to build them, later runs read the cache).
+Delete `.cache/` to rebuild, or change `CACHE_VERSION` in `long_run.py`.
+
+| Run | Function | Content |
+|---|---|---|
+| natural | `natural_run()` | all forces (gravity, J2, drag, Moon, Sun, SRP), sampled every 1 min |
+| divergence | `divergence_runs()` | a two-body baseline plus each force on its own, every 1 min |
+| controlled | `controlled_run()` | smooth tanh deadband controller with J2 and realistic drag, every 6 s (102 burns) |
+| drag only | `drag_only_run()` | the same orbit without the thruster, every 1 min |
+
+The drag in these runs is `SMOOTH_CD` (about 0.13 km/day of decay). The Week 4 value `CD_TRUE`
+lowers the orbit by about 45 km/day, so it cannot be flown for 400 days.
+
+Metrics are reported over **15, 30, 60, 120, 240 and 360 days** (`HORIZONS_DAYS`). The
+classification and learning steps (6-9) train on days 0-40 (`TRAIN_DAYS`) and test on days 40-400.
+Each horizon is counted from the start of the test period.
+
+### J2 check
+
+J2 now uses the **equatorial** radius 6378.137 km (`EARTH_EQUATORIAL_RADIUS_KM`). Before this fix
+it used the mean radius 6371 km, which made J2 about 0.22% too weak. Step 1 compares the simulated
+nodal regression with the theory dOmega/dt = -1.5 n J2 (R_eq/a)^2 cos i, with a(t) taken from the run
+because drag slowly lowers the orbit. After 400 days they agree to 0.04%. Step 1 also plots ground tracks.
 
 | Step | Folder | What it shows | Library code |
 |---|---|---|---|
-| 1 | `step1_dynamics` | state-space equations, orbit and ground track, force budget, one-week effect of J2/Moon/Sun/SRP, the 7 states through a burn, solver cross-check | `perturbations.py` |
-| 2 | `step2_regression` | mu vs sampling step, FD error vs step and stencil order, drag fit, five-term joint fit and column correlation | `regression.py` |
-| 3 | `step3_drag_noise` | Monte Carlo noise study, FD vs energy vs shooting for cd, cadence x noise sensitivity maps, shooting cost landscape | `regression.py`, `inverse.py` |
-| 4 | `step4_spectral_kalman` | spectrum of each force, J2 SNR studies, band/low-pass filtering, Kalman filter for cd vs the other methods | `spectral.py`, `kalman.py` |
-| 5 | `step5_deadband` | Figure 1 reproduction, tanh switch, hysteresis loop, thrust attenuation vs switch time, impulse vs smooth delta-v, fuel vs band width | `smooth_controller.py` |
-| 6 | `step6_classification` | 20-day dataset with train/test split, r'' vs v' noise floors, feature space, per-method test events, event F1, timing errors | `classifiers.py` |
-| 7 | `step7_robustness` | F1 and false alarms vs noise, method x noise heatmap, number of GMM components, training-set size, sampling step | `classifiers.py` |
-| 8 | `step8_repetition_gp` | autocorrelation period, stacked noisy burns, 1/sqrt(N) averaging, GP thrust law, folded coast arcs | `burn_folding.py` |
-| 9 | `step9_sindy_control_law` | library collinearity, SINDy and BINDy-style coefficients, recovered cd and thrust, switching law with and without memory, free-running burn forecast vs GP / random forest / periodic baseline | `sindy.py` |
+| 1 | `step1_dynamics` | state-space equations, orbit, ground tracks, J2 nodal-regression check, force divergence vs horizon, the 7 states through a burn, solver cross-check | `perturbations.py`, `long_run.py` |
+| 2 | `step2_regression` | mu vs sampling step, FD error vs step and stencil order, drag fit, five-term joint fit vs horizon, column correlation | `regression.py` |
+| 3 | `step3_drag_noise` | Monte Carlo noise study, cd vs horizon (FD, energy, shooting), cadence x noise sensitivity maps, shooting cost landscape | `regression.py`, `inverse.py` |
+| 3b | `step3_drag_noise` (`step3_noise_*`) | realistic noise (white at several rates + 1/f + random walk + periodic) vs white noise of the same RMS, for cd, J2, Moon, Sun, SRP and the energy cd | `noise_models.py` |
+| 4 | `step4_spectral_kalman` | spectrum of each force at 15 and 360 days, J2 SNR vs horizon and cadence, filtering, Kalman filter for cd | `spectral.py`, `kalman.py` |
+| 4b | `step4_spectral_kalman` (`step4_spectroscopy_*`) | "force spectroscopy": per-force spectra with diagnostic bands, spectral composition vs the force budget, band reading vs peak fit vs regression, speed | `force_spectroscopy.py` |
+| 5 | `step5_deadband` | Figure 1 reproduction, 400-day station keeping, burns / delta-v / miss distance per horizon, hysteresis loop, fuel vs band width | `smooth_controller.py` |
+| 6 | `step6_classification` | 400-day train/test split, feature space, per-method events, event F1 vs horizon | `classifiers.py` |
+| 7 | `step7_robustness` | F1 and false alarms vs noise, method x noise heatmap, GMM components, training size, sampling step (days 0-60) | `classifiers.py` |
+| 8 | `step8_repetition_gp` | autocorrelation period, stacked noisy burns, 1/sqrt(N) averaging, GP thrust law, learning vs horizon | `burn_folding.py` |
+| 9 | `step9_sindy_control_law` | SINDy and BINDy-style coefficients, recovered cd and thrust, switching law, 360-day free-running forecast and its error vs horizon | `sindy.py` |
+
+### Derivative methods, J2 check, spectroscopy and realistic noise
+
+* **Burn GMM and derivative methods** (`derivative_detection.py`, figures `deriv_*_methods`, `deriv_method_floor`
+  in step 6). With the 2nd-order stencil at 6 s, the coasting "unmodelled acceleration" is the stencil's own
+  truncation error (6e-5 m/s^2 from v), not drag. 4th/6th/8th-order central differences and Savitzky-Golay
+  bring it down to the real drag (8.1e-7 m/s^2). With 0.1 m / 0.5 mm/s noise, higher orders amplify the
+  noise and only Savitzky-Golay works. The GMM uses velocity data only, with 2 features: log |v' residual|
+  and its along-track part (thrust pushes forwards, noise does not). It has **4 components**: with 2,
+  the burn Gaussian must also cover the thruster ramp samples, so it sits off the burn.
+* **J2 figure** (`smooth_j2_mean_vs_osculating`). The 12.2 km osculating swing is real. It follows
+  a_E - (J2 R^2/a)(3 sin^2 lat - 1) to within 11 m. The 500 m band applies to the mean SMA a_E, which sits a fixed
+  (J2 R^2/a)(1 - 1.5 sin^2 i) = 275 m below the orbit-averaged osculating SMA. A unit test checks that the
+  J2 force is minus the gradient of the J2 potential used for a_E.
+* **Force spectroscopy** (`force_spectroscopy.py`, stage `step4s`). Spectral POWER shares do not match the
+  force budget (power ~ amplitude^2). sqrt(power) shares do (Parseval). Reading diagnostic bands IR-style is
+  30-40x faster than regression and reliable for drag, J2 and SRP. The Moon reads ~40% high and the Sun is
+  not separable (their tidal lines overlap). A phase-aware fit is exact but needs the model, like regression.
+* **Realistic noise** (`noise_models.py`, stage `step3n`). At the same RMS, realistic noise gives
+  slightly better FD cd but is 2-18x worse for J2, Moon, Sun, SRP and the energy cd.
 
 Every module starts with a plain-English docstring explaining the method. Read those first when
 reviewing the code.

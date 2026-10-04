@@ -122,6 +122,8 @@ def periodogram_snr(t, signal, background_max_cycles_per_orbit=None, peak_search
         guard = slice(max(0, j2_bin - GUARD_HALF_WIDTH_BINS), j2_bin + GUARD_HALF_WIDTH_BINS + 1)
     else:
         near = np.flatnonzero(np.abs(frequencies - j2_frequency) <= peak_search_fraction * j2_frequency)
+        if near.size == 0:                       # short record: bins wider than the window, use the nearest bin
+            near = np.array([j2_bin])
         peak_window = slice(near[0], near[-1] + 1)
         guard = slice(max(0, near[0] - GUARD_HALF_WIDTH_BINS), near[-1] + GUARD_HALF_WIDTH_BINS + 1)
     peak_power = float(np.max(power[peak_window]))

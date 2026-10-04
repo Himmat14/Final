@@ -6,7 +6,7 @@ Data: the 400-day controlled run. TRAIN = days 0-40, TEST = days 40-400; every s
 reported over the first 15, 30, 60, 120, 240 and 360 days of TEST.
 
 Figures (outputs/report/step6_classification/)
-    deriv_*                     r'' vs v' GMM on the 8-day run (the existing derivative-GMM stage, run here)
+    deriv_*                     r'' vs v' GMM on days 0-10 (main.py stage "derivative_gmm", same folder)
     step6_dataset_split         the 400-day run: true burns, train (days 0-40) / test (days 40-400)
     step6_derivative_spaces     unmodelled acceleration from positions (r'') and from velocities (v'),
                                 coast vs burn, clean vs noisy: why the classifiers use v'
@@ -27,7 +27,6 @@ from deadband.classifiers import MODELS, REFERENCE_NOISE, detection_dataset, eva
 from deadband.constants import THRUST_ACCEL_MS2, to_days
 from deadband.long_run import HORIZONS_DAYS, TRAIN_DAYS
 from deadband.derivative_detection import runs_of_ones
-from . import derivative_gmm_stage
 from .common import AMBER, GREEN, GREY, NAVY, PURPLE, RUST
 from .report_common import panel_label, report_style, save, step_dir
 
@@ -149,7 +148,6 @@ def _draw_timing(ax, scores):
 def run(sim, out_dir):
     warnings.filterwarnings("ignore", category=UserWarning)
     folder = step_dir(out_dir, "step6_classification")
-    gmm_results = derivative_gmm_stage.run(sim, folder)
 
     dataset = detection_dataset()
     features = {case: noisy_features(dataset, scale)[0] for case, scale in CASES.items()}
@@ -193,5 +191,5 @@ def run(sim, out_dir):
     table = {case: {name: dict(test=compact(r.test_scores),
                                by_horizon={f"{h}d": compact(r.horizon_scores[h]) for h in HORIZONS_DAYS})
                     for name, r in results.items()} for case, results in scores.items()}
-    return dict(report_step6=dict(reference_noise=REFERENCE_NOISE, scores=table), **gmm_results)
+    return dict(report_step6=dict(reference_noise=REFERENCE_NOISE, scores=table))
 

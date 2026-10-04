@@ -28,7 +28,7 @@ from deadband.constants import DU, J2, MU, SMOOTH_CD, to_days
 from deadband.long_run import HORIZONS_DAYS, natural_run
 from deadband.physics import propagate
 from deadband.regression import add_position_noise, fit_cd, fit_cd_energy, fit_mu
-from .common import AMBER, GREEN, NAVY, RUST, SLATE
+from .common import AMBER, GREEN, NAVY, RUST, SLATE, save_figure
 from .report_common import panel_label, report_style, save, step_dir
 
 NOISE_KM = (0.0, 0.001, 0.005, 0.01, 0.05, 0.1)       # 0 ... 100 m
@@ -200,7 +200,7 @@ def run(sim, out_dir):
         _draw_map(axes[0], fd_map, "cd error [%]: FD regression (15 d)")
         image = _draw_map(axes[1], energy_map, "cd error [%]: energy method (15 d)")
         fig.colorbar(image, ax=axes, label="log10 cd error [%]")
-        fig.savefig(folder / "step3_sensitivity_map.png", dpi=200); plt.close(fig)
+        save_figure(fig, folder, "step3_sensitivity_map.png", tight=False)   # the shared colour bar places itself
         fig, ax = plt.subplots(figsize=(7.5, 4.5)); _draw_landscape(ax, trials, rmse); save(fig, folder, "step3_shooting_landscape.png")
 
         fig, axes = plt.subplots(2, 3, figsize=(18, 9.5))

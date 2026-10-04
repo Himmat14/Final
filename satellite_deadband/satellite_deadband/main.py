@@ -3,10 +3,11 @@ Run the whole satellite-deadband pipeline from one place.
 
     python main.py                          # every stage, figures + results.json -> ./outputs
     python main.py --out my_results         # choose the output folder
-    python main.py --stages deadband gmm    # only some stages
+    python main.py --stages step6 gmm       # only some stages
     python main.py --list                   # show the available stages
 
-Each stage lives in `stages/` and calls the library code in `deadband/`.
+Each stage lives in `stages/` and calls the library code in `deadband/`. Every stage uses the same
+cached 400-day simulations (deadband/long_run.py), built on the first run (~20 minutes).
 """
 import argparse
 import json
@@ -18,37 +19,36 @@ from pathlib import Path
 
 import numpy as np
 
-from deadband.constants import PERIOD
-from deadband.controller import simulate_deadband
-from stages import (deadband_stage, detection_stage, gmm_stage, heldout_stage, inverse_stage,  # noqa: F401
-                    neural_net_stage, spectral_stage)   # (some are commented out of STAGES below)
-from stages import derivative_gmm_stage, smooth_deadband_stage   # noqa: F401  (run inside report steps 5-6)
-from stages import (report_step1, report_step2, report_step3, report_step4, report_step5, report_step6,
-                    report_step7, report_step8, report_step9)
+from deadband import settings
+from stages import (deadband_stage, derivative_gmm_stage, detection_stage, gmm_stage, heldout_stage, inverse_stage,
+                    neural_net_stage, smooth_deadband_stage, spectral_stage, tuning_stage)
+from stages.common import LABEL_REPORT
+from stages import (report_step1, report_step2, report_step3, report_step3_noise, report_step4,
+                    report_step4_spectroscopy, report_step5, report_step6, report_step7, report_step8, report_step9)
 
-N_ORBITS = 8   # length of the main simulated run used by most stages
-
-# name -> (description, module). Order matters only for the printed output.
+# name -> (description, module), in the order they run. Every stage reads the SAME cached 400-day
+# simulations (deadband/long_run.py) and writes into the folder of the report step it belongs to,
+# outputs/report/stepN_*/. The workstream stages (Weeks 2-5) run right after their report step.
 STAGES = {
-    # Week 4 stages not used in the Week 5 talk -- uncomment a line to bring it back.
-    # "deadband": ("Workstream B   state-dependent deadband controller", deadband_stage),
-    # "inverse": ("Workstream E   recover cd and J2 from trajectory data", inverse_stage),
-    # "detection": ("Workstream C/G  burn vs coast: five basic detectors, noise and cadence sweeps", detection_stage),
-    # "neural_net": ("Workstream D   neural-network long-horizon extrapolation test", neural_net_stage),
-    # Run inside report steps 4, 5 and 6 now (their figures land in outputs/report/...):
-    # "spectral": ("Workstream A   FFT / J2 spectral-peak robustness", spectral_stage),
-    # "gmm": ("Workstream C/G  2-feature GMM visuals and GMM vs k-means regions", gmm_stage),
-    # "heldout": ("Workstream C/G  60-orbit train/test split, more models, Gaussian Process", heldout_stage),
-    # "smooth_deadband": ("Week 5          smooth tanh deadband with J2, Figure 1", smooth_deadband_stage),
-    # "derivative_gmm": ("Week 5          burn detection: GMM in rdot / vdot space", derivative_gmm_stage),
-    # Report: nine steps, each writes step-by-step figures + a summary figure to outputs/report/stepN_*/
+    "tuning": ("Step 0    bias-variance tuning + walk-forward choice of the GMM derivative (runs first)", tuning_stage),
     "step1": ("Report 1  dynamic model, perturbations, data generation", report_step1),
     "step2": ("Report 2  learning coefficients by regression (mu, cd, joint fit)", report_step2),
+    "neural_net": ("  + Workstream D  time-indexed neural network vs a straight line (natural run)", neural_net_stage),
     "step3": ("Report 3  drag estimation and noise robustness (FD, energy, shooting)", report_step3),
+    "inverse": ("  + Workstream E  whole-trajectory fit of cd and J2, 3D cost surface", inverse_stage),
+    "step3n": ("Report 3b realistic (coloured, multi-rate) noise vs white noise for every estimator", report_step3_noise),
     "step4": ("Report 4  spectral analysis, filtering, Kalman filter for cd", report_step4),
+    "spectral": ("  + Workstream A  J2 SNR vs noise / cadence, 3D SNR surface and waterfall", spectral_stage),
+    "step4s": ("Report 4b force spectroscopy: which perturbations, in what mixture, from the FFT", report_step4_spectroscopy),
     "step5": ("Report 5  deadband control with a smooth tanh thruster", report_step5),
+    "smooth_deadband": ("  + Week 5         Figure 1, tanh switches, J2 mean vs osculating SMA (days 0-10)", smooth_deadband_stage),
+    "deadband": ("  + Workstream B  400-day sawtooth, every burn, 3D hysteresis loop", deadband_stage),
     "step6": ("Report 6  coast/burn classifiers, train/test split, event scores", report_step6),
+    "derivative_gmm": ("  + Week 5         GMM in rdot / vdot space, five derivative methods (days 0-10)", derivative_gmm_stage),
+    "gmm": ("  + Workstream C/G 2-feature GMM in 2D and 3D, phase space coloured by GMM weight", gmm_stage),
+    "heldout": ("  + Workstream C/G seven detectors on held-out days, GP coast curve, 3D phase fold", heldout_stage),
     "step7": ("Report 7  classifier robustness: noise, clusters, training size, sampling", report_step7),
+    "detection": ("  + Workstream C/G five basic detectors vs noise and sampling step", detection_stage),
     "step8": ("Report 8  repetition: autocorrelation, stacking, GP thrust law", report_step8),
     "step9": ("Report 9  SINDy / BINDy control law and burn forecasting", report_step9),
 }
@@ -108,6 +108,8 @@ def parse_arguments():
     parser.add_argument("--stages", nargs="+", choices=list(STAGES), default=list(STAGES),
                         help="stages to run (default: all)")
     parser.add_argument("--list", action="store_true", help="list the stages and exit")
+    parser.add_argument("--retune", action="store_true",
+                        help="delete the tuned settings and redo the bias-variance studies (several minutes)")
     return parser.parse_args()
 
 
@@ -121,11 +123,13 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.retune and settings.SETTINGS_FILE.exists():
+        settings.SETTINGS_FILE.unlink()
+    if not settings.is_tuned() and "tuning" not in args.stages:
+        print("Note: the tuning stage has not run yet, so the hand-picked default settings are used.\n")
+
     run_started = time.time()
-    print(f"Simulating {N_ORBITS} orbits under the deadband controller...", flush=True)
-    with status("simulation", run_started):
-        sim = simulate_deadband(PERIOD * N_ORBITS)
-    print(f"  {len(sim.t)} samples, {sim.n_burns} burn pairs\n")
+    sim = None   # no stage uses the old Week 4 run any more: every stage reads deadband/long_run.py
 
     results = {}
     for index, name in enumerate(args.stages, start=1):
@@ -136,6 +140,11 @@ def main():
             results.update(module.run(sim, out_dir))
         print(f"    done in {time.time() - started:.1f} s  (total {_format_elapsed(time.time() - run_started)})")
 
+    results["settings_used"] = settings.all_settings()
+    if LABEL_REPORT:
+        report = "\n".join(f"{name}: '{panel}' has no {missing}" for name, panel, missing in LABEL_REPORT)
+        (out_dir / "figure_label_check.txt").write_text(report)
+        print(f"\n{len(LABEL_REPORT)} chart(s) lack a title or axis label: see figure_label_check.txt")
     results_path = out_dir / "results.json"
     results_path.write_text(json.dumps(results, indent=2, default=_json_default))
     print(f"\nFigures and {results_path.name} written to {out_dir.resolve()}")

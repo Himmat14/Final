@@ -24,7 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .constants import (DU, SAMPLE_STEP_S, SECONDS, SMOOTH_CD, THRUST_ACCEL_MS2, from_days, from_minutes)
+from .constants import (DU, SAMPLE_STEP_S, SECONDS, SMOOTH_CD, SMOOTH_DAYS, THRUST_ACCEL_MS2, from_days,
+                        from_minutes)
 from .perturbations import FORCE_NAMES, propagate_full
 from .physics import propagate
 from .smooth_controller import mean_sma_km_series, simulate_smooth_deadband, smooth_initial_state, throttle
@@ -34,7 +35,8 @@ HORIZONS_DAYS = (15, 30, 60, 120, 240, 360)
 TRAIN_DAYS = 40                      # steps 6-9: learn from days 0-40, evaluate on days 40-400
 NATURAL_STEP_MIN = 1.0
 DIVERGENCE_STEP_MIN = 1.0           # 1 min so the runs can also draw ground tracks
-CHUNK_DAYS = 10                      # the controlled run is integrated in 10-day pieces (keeps memory low)
+CHUNK_DAYS = SMOOTH_DAYS             # the controlled run is integrated in 10-day pieces (keeps memory low);
+                                     # the first piece IS the Week 5 run (smooth_controller.default_runs)
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
 CACHE_VERSION = "v2"                 # bump when the physics changes (v2: J2 uses the equatorial radius)
 

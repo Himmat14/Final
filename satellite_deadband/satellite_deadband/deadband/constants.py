@@ -112,7 +112,8 @@ THROTTLE_OPENS_AT = 0.9               # the throttle opens only once the on/off 
 THROTTLE_WIDTH = 0.02                 # sharpness of the throttle opening
 
 # --- Integration ------------------------------------------------------------
-SMOOTH_DAYS = 8.0                     # length of the Week 5 run
+SMOOTH_DAYS = 10.0                    # length of the Week 5 run = the first 10-day chunk of the 400-day
+                                      # controlled run (long_run.CHUNK_DAYS), so both are the same data
 SMOOTH_SOLVER = "LSODA"               # switches to a stiff (BDF) method automatically when needed
 SMOOTH_SOLVER_TOLERANCE = 1e-11       # rtol = atol
 

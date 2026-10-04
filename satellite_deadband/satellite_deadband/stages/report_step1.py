@@ -21,7 +21,7 @@ from deadband.constants import (ACCEL_UNIT_MS2, DU, EARTH_EQUATORIAL_RADIUS_KM, 
 from deadband.long_run import HORIZONS_DAYS, controlled_run, divergence_runs, natural_run
 from deadband.perturbations import force_accelerations, propagate_full
 from deadband.smooth_controller import mean_sma_km_series, osculating_sma_km_series, throttle
-from .common import AMBER, GREEN, NAVY, PURPLE, RUST, SLATE
+from .common import AMBER, GREEN, NAVY, PURPLE, RUST, SLATE, save_figure
 from .report_common import panel_label, report_style, save, step_dir
 
 FORCE_COLORS = {"Gravity": "black", "Drag": RUST, "J2": NAVY, "Moon": GREEN, "Sun": AMBER, "SRP": PURPLE}
@@ -115,8 +115,7 @@ def _plot_equations(folder):
     fig.text(0.02, 0.95, "The dynamic model, written as one state-space system", fontsize=14, fontweight="bold")
     for i, line in enumerate(EQUATIONS):
         fig.text(0.03, 0.85 - i * 0.095, line, fontsize=11)
-    fig.savefig(folder / "step1_state_space_equations.png", dpi=200)
-    plt.close(fig)
+    save_figure(fig, folder, "step1_state_space_equations.png", tight=False)   # text only: no layout to tighten
 
 
 def _draw_orbit_3d(ax3d, states):

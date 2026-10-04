@@ -31,10 +31,11 @@ from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
 from .constants import ACCEL_UNIT_MS2, DU, SAMPLE_STEP_S, SECONDS, VU, from_days
 from .derivative_detection import event_scores, group_into_events, known_accel
 from .long_run import HORIZONS_DAYS, TRAIN_DAYS, controlled_run
+from .settings import tuned
 
 # --- Features ----------------------------------------------------------------
-SG_WINDOW = 21                          # samples in each local polynomial fit (21 x 6 s = 2 min)
-SG_ORDER = 5                            # polynomial order (high enough not to bias the orbit curvature)
+# The derivative method, Savitzky-Golay window and order, and the GMM size are chosen by the
+# bias-variance / walk-forward tuning stage (deadband/tuning.py) and read with settings.tuned().
 REFERENCE_NOISE = (0.1, 0.5)            # (position m, velocity mm/s) used for the "noisy" case
 FIT_SUBSAMPLE = 20_000                  # training samples each model is fitted on
 EVENT_TOLERANCE_S = 60.0
@@ -130,12 +131,30 @@ class Features:
                                 np.log(np.linalg.norm(self.accel_from_v, axis=0) + FLOOR_MS2)])
 
 
-def build_features(r, v, step_s, window=SG_WINDOW, order=SG_ORDER):
-    """Savitzky-Golay derivatives of the measured r and v, minus the known gravity + J2."""
+def _fill_edges(x):
+    """Central differences leave NaN where the stencil does not fit: copy the nearest valid column."""
+    valid = np.flatnonzero(np.isfinite(x[0]))
+    x[:, :valid[0]] = x[:, [valid[0]]]
+    x[:, valid[-1] + 1:] = x[:, [valid[-1]]]
+    return x
+
+
+def build_features(r, v, step_s, window=None, order=None, method=None):
+    """
+    Derivatives of the measured r and v, minus the known gravity + J2. By default the method,
+    Savitzky-Golay window and order are the tuned ones (settings.tuned).
+    """
+    from .derivative_detection import differentiate
     h = step_s * SECONDS
-    window = max(window, order + 2 + (order % 2 == 0))            # must be odd and longer than the order
-    r_second_derivative = savgol_filter(r, window, order, deriv=2, delta=h, axis=1)
-    v_first_derivative = savgol_filter(v, window, order, deriv=1, delta=h, axis=1)
+    method = method or tuned("derivative_method")
+    if method == "Savitzky-Golay":
+        window, order = window or tuned("sg_window"), order or tuned("sg_order")
+        window = max(window, order + 2 + (order % 2 == 0)) | 1    # must be odd and longer than the order
+        r_second_derivative = savgol_filter(r, window, order, deriv=2, delta=h, axis=1)
+        v_first_derivative = savgol_filter(v, window, order, deriv=1, delta=h, axis=1)
+    else:
+        r_second_derivative = _fill_edges(differentiate(r, h, method, 2))
+        v_first_derivative = _fill_edges(differentiate(v, h, method, 1))
     modelled = known_accel(r)
     from_r = (r_second_derivative - modelled) * ACCEL_UNIT_MS2
     from_v = (v_first_derivative - modelled) * ACCEL_UNIT_MS2
@@ -157,8 +176,9 @@ def mixture_burn_components(model, n_sigma=3.0):
     return model.means_[:, 0] > model.means_[coast, 0] + n_sigma * coast_sd
 
 
-def fit_gmm(X_train, n_components=2):
-    """Gaussian mixture with a fixed number of components."""
+def fit_gmm(X_train, n_components=None):
+    """Gaussian mixture with a fixed number of components (default: the tuned number)."""
+    n_components = n_components or tuned("gmm_components")
     model = GaussianMixture(n_components=n_components, n_init=3, random_state=0).fit(X_train)
     burn = mixture_burn_components(model)
     return lambda X: burn[model.predict(X)].astype(int), model
@@ -248,8 +268,8 @@ def evaluate(dataset: DetectionDataset, features: Features, methods=MODELS, n_fi
     return results
 
 
-def noisy_features(dataset, noise_scale=1.0, seed=0, window=SG_WINDOW):
-    """Features at `noise_scale` x the reference noise (0 = clean)."""
+def noisy_features(dataset, noise_scale=1.0, seed=0, window=None, method=None, order=None):
+    """Features at `noise_scale` x the reference noise (0 = clean), with the tuned derivative by default."""
     position_m, velocity_mms = REFERENCE_NOISE
     r, v = add_noise(dataset, position_m * noise_scale, velocity_mms * noise_scale, seed)
-    return build_features(r, v, dataset.step_s, window=window), (r, v)
+    return build_features(r, v, dataset.step_s, window=window, order=order, method=method), (r, v)

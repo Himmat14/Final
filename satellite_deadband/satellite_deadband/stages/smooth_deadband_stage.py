@@ -7,7 +7,8 @@ smooth_deadband_mean_sma_miss   mean SMA (controlled vs drag-only) + miss distan
 smooth_switch_functions         the tanh on/off switches and their sech^2 slopes for several widths
 smooth_burn_zoom                one burn up close: mean SMA, thruster state, throttle, solver step size
 smooth_slope_sweep              overshoot / burn length as the switch width and switch time are varied
-smooth_j2_mean_vs_osculating    why the controller must watch the MEAN SMA once J2 is on
+smooth_j2_mean_vs_osculating    why the controller must watch the MEAN SMA once J2 is on, with the
+                                12 km osculating swing checked against J2 theory
 smooth_integrator_steps         what the integrator does: step size over the whole run
 
 Every curve is sampled from the continuous solution every SAMPLE_STEP_MIN (0.1 min = 6 s).
@@ -17,7 +18,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from deadband.constants import (
-    DU, METRES, SAMPLE_STEP_MIN, SAMPLE_STEP_S, SECONDS, SMOOTH_A_LOWER, SMOOTH_A_LOWER_KM, SMOOTH_A_UPPER_KM,
+    DU, EARTH_EQUATORIAL_RADIUS_KM, INCLINATION, J2, METRES, PERIOD, SAMPLE_STEP_MIN, SAMPLE_STEP_S, SECONDS, SMOOTH_A_LOWER, SMOOTH_A_LOWER_KM, SMOOTH_A_UPPER_KM,
     SMOOTH_DAYS, SMOOTH_SOLVER,
     SMOOTH_SOLVER_TOLERANCE, SWITCH_SMA_WIDTH_M, SWITCH_TIME_S, THROTTLE_OPENS_AT, THRUST_ACCEL_MS2, from_days, from_hours,
     from_minutes, to_days, to_minutes,
@@ -27,6 +28,7 @@ from deadband.smooth_controller import (
     simulate_smooth_deadband, smooth_initial_state, throttle,
 )
 from .common import AMBER, GREEN, NAVY, PURPLE, RUST, SLATE, save_figure
+from .report_common import step_dir
 
 SWEEP_SMA_WIDTHS_M = (1, 2, 5, 10, 20, 50)        # tanh switch widths to try (SWITCH_TIME fixed)
 SWEEP_SWITCH_TIMES_S = (5, 15, 60, 180, 600)     # switch time constants to try (width fixed)
@@ -171,17 +173,77 @@ def _plot_slope_sweep(width_rows, time_rows, out_dir):
     save_figure(fig, out_dir, "smooth_slope_sweep.png")
 
 
+def j2_osculating_theory_km(states):
+    """
+    What J2 does to the osculating SMA, from energy conservation alone.
+
+    The osculating SMA uses the point-mass energy:  1/a_osc = 2/r - v^2/mu.
+    The total energy also contains the J2 potential  U = mu J2 R^2 (3 sin^2(lat) - 1) / (2 r^3),
+    and the TOTAL energy is what stays constant (it defines the mean SMA a_E). Taking U out gives
+        a_osc ~ a_E - (J2 R^2 / a_E) (3 sin^2(lat) - 1)
+    i.e. +J2 R^2/a = +6.4 km over the equator (stronger pull -> faster -> SMA reads high) and
+    -(3 sin^2 i - 1) J2 R^2/a = -5.8 km at the highest latitude (i = 53 deg). Twice per orbit.
+    """
+    a_e = mean_sma_km_series(states)
+    sin_lat_sq = (states[2] / np.linalg.norm(states[0:3], axis=0)) ** 2
+    return a_e - J2 * EARTH_EQUATORIAL_RADIUS_KM**2 / a_e * (3 * sin_lat_sq - 1)
+
+
+def _orbit_average(values, step):
+    """Running mean over exactly one orbital period (edges where the window does not fit are NaN)."""
+    n = int(round(PERIOD / step))
+    out = np.full(len(values), np.nan)
+    out[n // 2:n // 2 + len(values) - n + 1] = np.convolve(values, np.ones(n) / n, mode="valid")
+    return out
+
+
 def _plot_j2_mean_vs_osculating(controlled, osculating_run, out_dir):
-    fig, (ax_signal, ax_run) = plt.subplots(1, 2, figsize=(12, 4.4))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    (ax_signal, ax_latitude), (ax_residual, ax_run) = axes
     times = np.arange(0, from_days(0.4), SAMPLE_STEP)
     states = controlled.sample(times)
     hours = to_days(times) * 24
-    ax_signal.plot(hours, osculating_sma_km_series(states), color=SLATE, lw=0.8, label="osculating SMA")
-    ax_signal.plot(hours, mean_sma_km_series(states), color=NAVY, lw=2, label="mean SMA (energy incl. J2)")
-    ax_signal.axhspan(SMOOTH_A_LOWER_KM, SMOOTH_A_UPPER_KM, color=RUST, alpha=0.25, label="500 m deadband")
-    ax_signal.set(xlabel="Time [hours]", ylabel="SMA [km]",
-                  title=f"J2 swings the osculating SMA by ~12 km per orbit ({SAMPLE_STEP_MIN} min samples)")
-    ax_signal.legend(fontsize=8, loc="lower right")
+    osculating = osculating_sma_km_series(states)
+    theory = j2_osculating_theory_km(states)
+    mean = mean_sma_km_series(states)
+    averaged = _orbit_average(osculating, SAMPLE_STEP)
+    scale = J2 * EARTH_EQUATORIAL_RADIUS_KM**2 / np.mean(mean)             # J2 R^2 / a  [km]
+    offset = scale * (1 - 1.5 * np.sin(INCLINATION) ** 2)                 # orbit average of -(3 sin^2 lat - 1)
+
+    # (a) the swing, with the theory on top and the two kinds of "mean"
+    ax_signal.plot(hours, osculating, color=SLATE, lw=2.5, alpha=0.6, label="osculating SMA (simulation)")
+    ax_signal.plot(hours, theory, color=AMBER, lw=1, ls="--", label="J2 theory: a_E - (J2 R^2/a)(3 sin^2 lat - 1)")
+    ax_signal.plot(hours, mean, color=NAVY, lw=2, label="mean SMA a_E (energy incl. J2): what the controller watches")
+    ax_signal.plot(hours, averaged, color=GREEN, lw=2, ls="-.",
+                   label=f"osculating SMA averaged over one orbit (= a_E + {1000 * offset:.0f} m)")
+    for level, text in ((np.mean(mean) + scale, "equator: a_E + J2 R^2/a"),
+                        (np.mean(mean) - scale * (3 * np.sin(INCLINATION) ** 2 - 1), "max latitude 53 deg")):
+        ax_signal.axhline(level, color=AMBER, lw=0.6, ls=":")
+        ax_signal.text(hours[-1], level, f" {text}", fontsize=7, va="center", ha="left", color=AMBER)
+    ax_signal.set(xlabel="Time [hours]", ylabel="SMA [km]", xlim=(0, hours[-1] * 1.25), ylim=(6910, 6930),
+                  title=f"J2 swings the osculating SMA by {np.ptp(osculating):.1f} km, twice per orbit")
+    ax_signal.legend(fontsize=7, loc="lower right")
+
+    # (b) the swing depends on latitude only: it IS J2
+    latitude = np.degrees(np.arcsin(states[2] / np.linalg.norm(states[0:3], axis=0)))
+    ax_latitude.plot(latitude, osculating - mean, ".", ms=2, color=SLATE, label="simulation")
+    grid = np.linspace(-np.degrees(INCLINATION), np.degrees(INCLINATION), 200)
+    ax_latitude.plot(grid, -scale * (3 * np.sin(np.radians(grid)) ** 2 - 1), color=AMBER, lw=2, ls="--",
+                     label="theory -(J2 R^2/a)(3 sin^2 lat - 1)")
+    ax_latitude.set(xlabel="latitude [deg]", ylabel="osculating - mean SMA [km]",
+                    title="The swing is a function of latitude only (J2 is zonal)")
+    ax_latitude.legend(fontsize=8)
+
+    # (c) how good is the theory: the residual is second order (r is not exactly a)
+    ax_residual.plot(hours, (osculating - theory) * 1000, color=PURPLE, lw=1)
+    ax_residual.set(xlabel="Time [hours]", ylabel="simulation - theory [m]",
+                    title=f"Theory matches to {np.max(np.abs(osculating - theory)) * 1000:.0f} m out of "
+                          f"{np.ptp(osculating):.1f} km (first-order J2, r ~ a)")
+    ax_residual.set_ylim(top=np.max(np.abs(osculating - theory)) * 1000 * 1.8)
+    ax_residual.text(0.01, 0.97, "the 500 m deadband is applied to a_E (navy), never to the osculating SMA;\n"
+                                 "a_E and the orbit-averaged SMA differ by a fixed "
+                                 f"(J2 R^2/a)(1 - 1.5 sin^2 i) = {1000 * offset:.0f} m: a definition, not an error",
+                     transform=ax_residual.transAxes, fontsize=8, color=SLATE, va="top")
 
     n_burns = len(osculating_run.burn_intervals(BURN_RESOLUTION))
     times = osculating_run.sample_times(SAMPLE_STEP)
@@ -193,8 +255,9 @@ def _plot_j2_mean_vs_osculating(controlled, osculating_run, out_dir):
     ax_run.set(xlabel="Time [hours]", ylabel="Mean SMA [km]",
                title="Triggering on the osculating SMA fires every orbit and climbs out")
     ax_run.legend(fontsize=8, loc="upper left")
-    for ax in (ax_signal, ax_run):
+    for ax in axes.ravel():
         ax.grid(alpha=0.3)
+    fig.tight_layout()
     save_figure(fig, out_dir, "smooth_j2_mean_vs_osculating.png")
     return n_burns
 
@@ -215,7 +278,8 @@ def _plot_integrator_steps(controlled, burns, out_dir):
 # Stage entry point
 # ---------------------------------------------------------------------------
 def run(sim, out_dir):
-    """`sim` (the Week 4 run) is not used: this stage builds its own 8-day J2 run."""
+    """`sim` is not used: days 0-10 of the controlled run (the cached Week 5 run); figures go to step5_deadband/."""
+    out_dir = step_dir(out_dir, "step5_deadband")
     controlled, drag_only = default_runs()
     burns = controlled.burn_intervals(BURN_RESOLUTION)
     times = controlled.sample_times(SAMPLE_STEP)

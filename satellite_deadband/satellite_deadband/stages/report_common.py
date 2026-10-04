@@ -10,22 +10,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from .common import save_figure
+from .common import STYLE, SUPTITLE_SIZE, save_figure
 
-# A consistent, clean look for every report figure (applied only inside `report_style()`).
-REPORT_RC = {
-    "font.size": 10,
-    "axes.titlesize": 11,
-    "axes.titleweight": "bold",
-    "axes.labelsize": 10,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": True,
-    "grid.alpha": 0.3,
-    "legend.fontsize": 8,
-    "legend.frameon": False,
-    "figure.dpi": 100,
-}
+# The report look is the common style of every figure (stages/common.py); kept as a name so the
+# `with report_style():` blocks in the report stages stay readable.
+REPORT_RC = STYLE
 
 
 @contextmanager
@@ -49,7 +38,7 @@ def panel_label(ax, letter):
 
 def save(fig, folder, filename, suptitle=None):
     if suptitle:
-        fig.suptitle(suptitle, fontsize=13, fontweight="bold")
+        fig.suptitle(suptitle, fontsize=SUPTITLE_SIZE, fontweight="bold")
         save_figure(fig, folder, filename, tight_rect=(0, 0, 1, 0.96))
     else:
         save_figure(fig, folder, filename)

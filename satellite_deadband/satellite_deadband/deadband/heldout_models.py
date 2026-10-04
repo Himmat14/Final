@@ -1,183 +1,168 @@
 """
-Held-out evaluation of several burn detectors on a long run (Workstream C/G, further extended).
+Held-out evaluation of more burn detectors (Workstream C/G, further extended), on the SAME data,
+split and scoring as report step 6:
 
-* A 60-orbit simulation is split CHRONOLOGICALLY: the first 70% of time trains every
-  model, the last 30% (never seen while fitting) scores it. A random split would leak
-  future information backwards and overstate every score.
-* Models: GMM, k-means, Bayesian GMM, Agglomerative (Ward), Isolation Forest, DBSCAN, and
-  a Gaussian Process that models undisturbed coasting and flags wherever reality departs
-  from it.
-* DBSCAN has no predict() for new points (it is transductive), so it is scored in-sample
-  only and flagged as such.
+    data      days 0-100 of the 400-day controlled run, step 6 reference noise (0.1 m, 0.5 mm/s)
+    split     chronological: TRAIN = days 0-40, TEST = days 40-100 (detectors.window_features)
+    features  [log |unmodelled accel from v'|, along-track part / 1e-4 m/s^2] (classifiers.Features)
+    scoring   flags -> burn EVENTS -> found burns, false events, precision / recall / F1 on TEST
+
+Models
+------
+    GMM (tuned K)       fitted on TRAIN; burn components by the step 6 rule (gmm_2d.fit_feature_gmm)
+    K-means (2D)        fitted on TRAIN; the cluster with the larger log|v'| centre is burn
+    Bayesian GMM        up to 6 components, its prior switches off the unused ones
+    Agglomerative       Ward clustering of a TRAIN subsample; new points go to the nearest centroid
+    Isolation Forest    anomaly detector (1% contamination), flags only points above the coast median
+    DBSCAN              has no predict(): run IN-SAMPLE on TEST (every 10th sample, 60 s), flagged as such
+    GP anomaly          a Gaussian process learns how the mean SMA decays while coasting, as a function
+                        of the time since the SMA last touched the UPPER band edge (observable, no labels:
+                        every coast starts there). A sample is a burn when the measured SMA departs from
+                        the GP's coast curve UPWARDS (thrust only raises it) by more than Z_THRESHOLD
+                        times the scatter of the TRAIN coast samples around the curve.
 """
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass
 
 import numpy as np
 from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.ensemble import IsolationForest
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
-from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
+from sklearn.mixture import BayesianGaussianMixture
 
-from .constants import PERIOD
-from .controller import DeadbandSimulation, simulate_deadband
-from .evidence import BurnEvidence, build_evidence
-from .metrics import score_predictions
-from .physics import osculating_sma_km
+from .classifiers import EVENT_TOLERANCE_S, add_noise, mixture_burn_components
+from .constants import SMOOTH_A_UPPER_KM, TU
+from .derivative_detection import event_scores, group_into_events
+from .detectors import train_subsample, window_features
+from .gmm_2d import fit_feature_gmm
+from .smooth_controller import mean_sma_km_series
 
-N_ORBITS_LONG = 60
-TRAIN_FRACTION = 0.7
+AGGLOMERATIVE_SAMPLES = 4000          # Ward clustering needs memory ~ n^2
+DBSCAN_STRIDE = 10                    # DBSCAN on every 10th TEST sample (60 s)
+GP_POINTS = 600
+GP_CHUNK = 100_000                    # predict in chunks: one call on 1.4 M samples would need ~7 GB
+Z_THRESHOLD = 5.0
+EDGE_TOLERANCE_KM = 0.005             # "touched the upper edge" = within 5 m of it
+REARM_KM = 0.05                       # the clock can only reset again once the SMA has fallen 50 m below the edge
 
-# Display names, shared with the plotting code
-GMM_NAME = "GMM (2D)"
+GMM_NAME = "GMM (tuned K)"
 KMEANS_NAME = "K-means (2D)"
 BAYESIAN_GMM_NAME = "Bayesian GMM"
-AGGLOMERATIVE_NAME = "Agglomerative (ward)"
+AGGLOMERATIVE_NAME = "Agglomerative (Ward)"
 ISOLATION_FOREST_NAME = "Isolation Forest"
-DBSCAN_TRAIN_NAME = "DBSCAN (in-sample, train)"
-DBSCAN_TEST_NAME = "DBSCAN (in-sample, test)"
-GP_NAME = "Gaussian Process (dynamics anomaly)"
-
-
-@dataclass
-class FittedDetector:
-    """A model fitted on training data. `predict` maps (n, 2) features to 0/1 burn flags."""
-    name: str
-    predict: Callable[[np.ndarray], np.ndarray]
-    info: dict = field(default_factory=dict)
+DBSCAN_NAME = "DBSCAN (in-sample on TEST, 60 s)"
+GP_NAME = "GP coast-curve anomaly"
 
 
 # ---------------------------------------------------------------------------
-# Models that can be fitted on one set and applied to another
+# Inductive models: fit(X_train) -> predict(X) -> 0/1
 # ---------------------------------------------------------------------------
-def _burn_cluster(centres):
-    """The cluster whose centre has the largest summed coordinates is "burn"."""
-    return int(np.argmax(centres.sum(axis=1)))
+def fit_gmm(X_train):
+    gmm = fit_feature_gmm(X_train)
+    return gmm.predict, dict(model=gmm.model, is_burn=gmm.is_burn)
 
 
-def fit_gmm(train_features):
-    model = GaussianMixture(n_components=2, n_init=8, random_state=0, covariance_type="full").fit(train_features)
-    burn = _burn_cluster(model.means_)
-    return FittedDetector(GMM_NAME, lambda X: (model.predict(X) == burn).astype(int),
-                          info=dict(model=model, burn=burn))
+def fit_kmeans(X_train):
+    model = KMeans(n_clusters=2, n_init=8, random_state=0).fit(X_train)
+    burn = int(np.argmax(model.cluster_centers_[:, 0]))
+    return (lambda X: (model.predict(X) == burn).astype(int)), dict(model=model)
 
 
-def fit_kmeans(train_features):
-    model = KMeans(n_clusters=2, n_init=8, random_state=0).fit(train_features)
-    burn = _burn_cluster(model.cluster_centers_)
-    return FittedDetector(KMEANS_NAME, lambda X: (model.predict(X) == burn).astype(int),
-                          info=dict(model=model, burn=burn))
-
-
-def fit_bayesian_gmm(train_features):
-    """Up to 6 components; a sparsity-inducing prior prunes the unused ones."""
+def fit_bayesian_gmm(X_train):
     model = BayesianGaussianMixture(n_components=6, covariance_type="full", random_state=0,
-                                    weight_concentration_prior=0.01, max_iter=500).fit(train_features)
-    burn = _burn_cluster(model.means_)
-    n_active = int(np.sum(model.weights_ > 0.01))
-    return FittedDetector(BAYESIAN_GMM_NAME, lambda X: (model.predict(X) == burn).astype(int),
-                          info=dict(model=model, burn=burn, n_active=n_active))
+                                    weight_concentration_prior=0.01, max_iter=1000).fit(X_train)
+    burn = mixture_burn_components(model)
+    return (lambda X: burn[model.predict(X)].astype(int)), dict(model=model, n_active=int(np.sum(model.weights_ > 0.01)))
 
 
-def fit_agglomerative(train_features):
-    """
-    Ward clustering has no predict(), so new points go to the nearest training-cluster
-    centroid (the standard workaround).
-    """
-    clustering = AgglomerativeClustering(n_clusters=2, linkage="ward").fit(train_features)
-    centroids = np.array([train_features[clustering.labels_ == k].mean(axis=0) for k in (0, 1)])
-    burn = _burn_cluster(centroids)
+def fit_agglomerative(X_train):
+    """Ward clustering has no predict(): new points go to the nearest cluster centroid."""
+    X = X_train[:AGGLOMERATIVE_SAMPLES]
+    labels = AgglomerativeClustering(n_clusters=2, linkage="ward").fit(X).labels_
+    centroids = np.array([X[labels == k].mean(axis=0) for k in (0, 1)])
+    burn = int(np.argmax(centroids[:, 0]))
 
-    def predict(X):
-        distances = np.linalg.norm(X[:, None, :] - centroids[None, :, :], axis=2)
+    def predict(Xn):
+        distances = np.linalg.norm(Xn[:, None, :] - centroids[None, :, :], axis=2)
         return (np.argmin(distances, axis=1) == burn).astype(int)
 
-    return FittedDetector(AGGLOMERATIVE_NAME, predict, info=dict(centroids=centroids, burn=burn))
+    return predict, dict(centroids=centroids)
 
 
-def fit_isolation_forest(train_features, train_labels):
-    """Contamination is set from the TRAINING burn fraction (no peeking at test labels)."""
-    contamination = max(float(np.mean(train_labels)), 1e-3)
-    model = IsolationForest(n_estimators=300, contamination=contamination, random_state=0).fit(train_features)
-    return FittedDetector(ISOLATION_FOREST_NAME, lambda X: (model.predict(X) == -1).astype(int),
-                          info=dict(model=model))
+def fit_isolation_forest(X_train):
+    model = IsolationForest(n_estimators=200, contamination=0.01, random_state=0).fit(X_train)
+    median = np.median(X_train[:, 0])
+    return (lambda X: ((model.predict(X) == -1) & (X[:, 0] > median)).astype(int)), dict(model=model)
 
 
-def dbscan_in_sample(features):
-    """Run DBSCAN on `features` and call the smallest cluster plus all noise points "burn"."""
-    eps = 0.6 * np.std(features, axis=0).mean()
-    labels = DBSCAN(eps=eps, min_samples=5).fit(features).labels_
+INDUCTIVE = {GMM_NAME: fit_gmm, KMEANS_NAME: fit_kmeans, BAYESIAN_GMM_NAME: fit_bayesian_gmm,
+             AGGLOMERATIVE_NAME: fit_agglomerative, ISOLATION_FOREST_NAME: fit_isolation_forest}
+
+
+def dbscan_flags(X):
+    """DBSCAN on X; the smallest cluster plus all noise points above the median log|v'| are burn."""
+    labels = DBSCAN(eps=0.15, min_samples=10).fit(X).labels_
     clusters = [c for c in set(labels) if c != -1]
     if not clusters:
-        return (labels == -1).astype(int)
-    sizes = {c: np.sum(labels == c) for c in clusters}
-    smallest = min(sizes, key=sizes.get)
-    return ((labels == smallest) | (labels == -1)).astype(int)
+        return np.zeros(len(X), dtype=int)
+    biggest = max(clusters, key=lambda c: np.sum(labels == c))
+    return ((labels != biggest) & (X[:, 0] > np.median(X[:, 0]))).astype(int)
 
 
 # ---------------------------------------------------------------------------
-# Gaussian Process dynamics-anomaly detector
+# GP coast-curve anomaly detector
 # ---------------------------------------------------------------------------
 @dataclass
 class GpDetection:
-    elapsed: np.ndarray      # time since the most recent burn, per sample
-    sma_km: np.ndarray
-    mean: np.ndarray         # GP prediction of the coast SMA
-    std: np.ndarray
-    z_score: np.ndarray      # |SMA - mean| / std
-    predicted: np.ndarray    # 0/1 burn flags (z above the threshold)
-    threshold: float
-    fit_indices: np.ndarray  # training samples the GP was fitted on
+    elapsed_hours: np.ndarray   # time since the measured SMA last touched the upper edge
+    sma_km: np.ndarray          # measured mean SMA
+    mean: np.ndarray            # GP coast curve at each sample
+    z_score: np.ndarray
+    flags: np.ndarray
+    fit_rows: np.ndarray
     model: GaussianProcessRegressor
 
 
-def elapsed_since_reset(t, burn_times):
-    """Time since the most recent burn (or since the start of the run before the first burn)."""
-    burn_times = np.asarray(burn_times)
-    if len(burn_times) == 0:
-        return t - t[0]
-    last = np.searchsorted(burn_times, t, side="right") - 1
-    last_reset = np.where(last >= 0, burn_times[np.clip(last, 0, len(burn_times) - 1)], t[0])
-    return t - last_reset
-
-
-def fit_gp_detector(sim: DeadbandSimulation, labels, train_mask, n_fit_points=400, seed=0):
+def time_since_upper_edge(t, sma_km):
     """
-    Fit a GP to coast-only TRAINING samples, regressing SMA on time-since-last-burn.
-
-    Using elapsed time (not absolute time) "phase-folds" ~180 near-identical coast
-    segments onto one curve, which a single smooth GP can fit. A sample is flagged as a
-    burn when its SMA departs from the GP by more than `threshold` standard deviations;
-    the threshold is chosen on TRAIN data only and then frozen.
+    Hours since each coast began: the FIRST time the measured SMA came within EDGE_TOLERANCE_KM of the
+    upper band edge. With hysteresis: after a reset the clock re-arms only once the SMA has fallen
+    REARM_KM below the edge, so noise flickering around the edge in the first hour of a coast (the
+    SMA falls only ~5 m per hour) cannot keep resetting it. NaN before the first coast starts.
     """
-    sma_km = osculating_sma_km(sim.states)
-    elapsed = elapsed_since_reset(sim.t, sim.burn_times)
+    near_edge = sma_km >= SMOOTH_A_UPPER_KM - EDGE_TOLERANCE_KM
+    well_below = sma_km < SMOOTH_A_UPPER_KM - REARM_KM
+    elapsed = np.full(len(t), np.nan)
+    start, armed = None, True
+    for i in range(len(t)):
+        if armed and near_edge[i]:
+            start, armed = t[i], False          # a new coast starts here
+        elif well_below[i]:
+            armed = True
+        if start is not None:
+            elapsed[i] = (t[i] - start) * TU / 3600
+    return elapsed
 
-    coast_train = np.where(train_mask & (labels == 0))[0]
-    fit_indices = np.random.default_rng(seed).choice(coast_train, size=min(n_fit_points, len(coast_train)),
-                                                     replace=False)
 
-    # The length scale is bounded well above the sample spacing (~0.002) so the GP cannot
-    # collapse into a near-noise-free interpolator that snaps through every training point.
-    kernel = (ConstantKernel(1.0, (1e-3, 1e4)) * RBF(length_scale=0.05, length_scale_bounds=(5e-3, 2.0))
-              + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-6, 1.0)))
-    model = GaussianProcessRegressor(kernel=kernel, normalize_y=True, n_restarts_optimizer=8,
-                                     random_state=seed).fit(elapsed[fit_indices].reshape(-1, 1), sma_km[fit_indices])
-
-    mean, std = model.predict(elapsed.reshape(-1, 1), return_std=True)
-    z_score = np.abs(sma_km - mean) / np.maximum(std, 1e-6)
-
-    best_threshold, best_score = None, -1
-    for threshold in np.arange(1.0, 8.0, 0.25):
-        train_score = score_predictions((z_score[train_mask] > threshold).astype(int),
-                                        labels[train_mask])["balanced_accuracy"]
-        if train_score > best_score:
-            best_score, best_threshold = train_score, threshold
-
-    return GpDetection(elapsed=elapsed, sma_km=sma_km, mean=mean, std=std, z_score=z_score,
-                       predicted=(z_score > best_threshold).astype(int), threshold=float(best_threshold),
-                       fit_indices=fit_indices, model=model)
+def fit_gp_detector(dataset, sma_km, seed=0):
+    elapsed = time_since_upper_edge(dataset.t, sma_km)
+    rows = np.flatnonzero(dataset.train & (dataset.true_on == 0) & (elapsed > 0))   # NaN compares False
+    fit_rows = np.random.default_rng(seed).choice(rows, size=min(GP_POINTS, rows.size), replace=False)
+    offset = sma_km[fit_rows].mean()
+    kernel = ConstantKernel(1.0) * RBF(length_scale=20.0, length_scale_bounds=(1.0, 500.0)) + WhiteKernel(1e-6)
+    model = GaussianProcessRegressor(kernel=kernel, normalize_y=True, random_state=seed)
+    model.fit(elapsed[fit_rows, None], sma_km[fit_rows] - offset)
+    known = np.flatnonzero(np.isfinite(elapsed))
+    mean = np.full(len(elapsed), np.nan)
+    for start in range(0, len(known), GP_CHUNK):
+        rows_k = known[start:start + GP_CHUNK]
+        mean[rows_k] = model.predict(elapsed[rows_k, None]) + offset
+    residual = sma_km - mean
+    coast_train = np.flatnonzero(dataset.train & (dataset.true_on == 0) & np.isfinite(mean))
+    scatter = 1.4826 * np.median(np.abs(residual[coast_train] - np.median(residual[coast_train])))   # robust sd
+    z = np.where(np.isfinite(mean), residual / scatter, 0.0)                                         # one-sided
+    return GpDetection(elapsed_hours=elapsed, sma_km=sma_km, mean=mean, z_score=z,
+                       flags=(z > Z_THRESHOLD).astype(int), fit_rows=fit_rows, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -185,55 +170,53 @@ def fit_gp_detector(sim: DeadbandSimulation, labels, train_mask, n_fit_points=40
 # ---------------------------------------------------------------------------
 @dataclass
 class HeldOutExperiment:
-    sim: DeadbandSimulation
-    evidence: BurnEvidence
-    features: np.ndarray
-    train_mask: np.ndarray
-    test_mask: np.ndarray
-    t_split: float
-    detectors: dict          # name -> FittedDetector (inductive models only)
+    dataset: object
+    X: np.ndarray
+    predictors: dict             # name -> predict function (inductive models)
+    info: dict                   # name -> fitted-model details
+    events: dict                 # name -> event flags on every sample (TEST only)
+    rows: list                   # one score dict per method, on TEST
     gp: GpDetection
-    rows: list               # one score dict per method, all on the held-out test set
-
-    @property
-    def train_labels(self):
-        return self.evidence.true_label[self.train_mask]
-
-    @property
-    def test_labels(self):
-        return self.evidence.true_label[self.test_mask]
-
-    @property
-    def test_features(self):
-        return self.features[self.test_mask]
-
-    def row(self, method_name):
-        return next(r for r in self.rows if r["method"] == method_name)
+    dbscan_rows: np.ndarray      # TEST samples DBSCAN ran on
+    dbscan_flags: np.ndarray
 
 
-def chronological_split(t, train_fraction=TRAIN_FRACTION):
-    t_split = t[0] + train_fraction * (t[-1] - t[0])
-    return t < t_split, t >= t_split, t_split
+def _score(dataset, events, rows, stride=1):
+    """Event scores on the samples `rows` (every `stride`-th sample, so the sampling step is stride x 6 s)."""
+    scores = event_scores(dataset.t[rows], events[rows], dataset.true_on[rows], dataset.step_s * stride,
+                          EVENT_TOLERANCE_S)
+    return {k: v for k, v in scores.items() if k != "per_burn"}
 
 
-def run_heldout_experiment(sim: DeadbandSimulation = None):
-    sim = sim or simulate_deadband(PERIOD * N_ORBITS_LONG)
-    evidence = build_evidence(sim)
-    features, labels = evidence.features, evidence.true_label
-    train_mask, test_mask, t_split = chronological_split(evidence.t)
-    train_X, test_X = features[train_mask], features[test_mask]
-    train_y, test_y = labels[train_mask], labels[test_mask]
+def run_heldout_experiment():
+    dataset, features = window_features(1.0, seed=1)
+    X = features.matrix
+    X_train = train_subsample(X, dataset)
+    test = np.flatnonzero(dataset.test)
 
-    detectors = {d.name: d for d in (
-        fit_gmm(train_X), fit_kmeans(train_X), fit_bayesian_gmm(train_X),
-        fit_agglomerative(train_X), fit_isolation_forest(train_X, train_y),
-    )}
-    gp = fit_gp_detector(sim, labels, train_mask)
+    predictors, info, events, rows = {}, {}, {}, []
+    for name, fit in INDUCTIVE.items():
+        predict, details = fit(X_train)
+        predictors[name], info[name] = predict, details
+        flags = np.zeros(len(X), dtype=int)
+        flags[test] = predict(X[test])
+        events[name] = group_into_events(flags)
+        rows.append(dict(method=name, **_score(dataset, events[name], test)))
 
-    rows = [dict(method=name, **score_predictions(det.predict(test_X), test_y)) for name, det in detectors.items()]
-    rows.append(dict(method=DBSCAN_TRAIN_NAME, **score_predictions(dbscan_in_sample(train_X), train_y)))
-    rows.append(dict(method=DBSCAN_TEST_NAME, **score_predictions(dbscan_in_sample(test_X), test_y)))
-    rows.append(dict(method=GP_NAME, **score_predictions(gp.predicted[test_mask], test_y)))
+    dbscan_rows = test[::DBSCAN_STRIDE]
+    flags = dbscan_flags(X[dbscan_rows])
+    coarse = group_into_events(flags)
+    events[DBSCAN_NAME] = np.zeros(len(X), dtype=int)
+    events[DBSCAN_NAME][dbscan_rows] = coarse
+    rows.append(dict(method=DBSCAN_NAME, **_score(dataset, events[DBSCAN_NAME], dbscan_rows, DBSCAN_STRIDE)))
 
-    return HeldOutExperiment(sim=sim, evidence=evidence, features=features, train_mask=train_mask,
-                             test_mask=test_mask, t_split=t_split, detectors=detectors, gp=gp, rows=rows)
+    r, v = add_noise(dataset, 0.1, 0.5, seed=1)                    # same measured r, v as the features
+    sma = mean_sma_km_series(np.vstack([r, v]))
+    gp = fit_gp_detector(dataset, sma)
+    flags = np.zeros(len(X), dtype=int)
+    flags[test] = gp.flags[test]
+    events[GP_NAME] = group_into_events(flags)
+    rows.append(dict(method=GP_NAME, **_score(dataset, events[GP_NAME], test)))
+
+    return HeldOutExperiment(dataset=dataset, X=X, predictors=predictors, info=info, events=events, rows=rows, gp=gp,
+                             dbscan_rows=dbscan_rows, dbscan_flags=coarse)

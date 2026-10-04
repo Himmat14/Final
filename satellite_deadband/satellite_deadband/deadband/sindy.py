@@ -36,11 +36,11 @@ from sklearn.linear_model import ARDRegression, LogisticRegression
 
 from .constants import DU, MU, SECONDS, TU
 from .derivative_detection import runs_of_ones
+from .settings import tuned
 from .smooth_controller import mean_sma_km_series
 
-SMA_SMOOTH_WINDOW = 41      # samples (4 min) for the SMA derivative
+# the SMA smoothing window and the STLSQ threshold are tuned (settings.tuned("sma_window" / "stlsq_threshold"))
 EDGE_BUFFER_S = 120.0       # samples this close to a burn edge are left out of both clusters
-STLSQ_THRESHOLD = 0.05      # SINDy drops coefficients smaller than 5% of the largest one
 LIBRARY_NAMES = ["coast (1-s)", "burn s", "a - a_ref", "s (a - a_ref)", "(a - a_ref)^2"]
 PHYSICS_LIBRARY_NAMES = ["drag shape D", "thrust shape B", "constant"]
 
@@ -58,12 +58,13 @@ class SmaData:
     burn: np.ndarray       # bool: clearly burning
 
 
-def sma_data(t, r, v, events, step_s):
+def sma_data(t, r, v, events, step_s, window=None):
     """Mean SMA from measured r, v; its derivative; and coast / burn masks from the detected events."""
+    window = window or tuned("sma_window")
     a = mean_sma_km_series(np.vstack([r, v])) / DU
     h = step_s * SECONDS
-    a_smooth = savgol_filter(a, SMA_SMOOTH_WINDOW, 2)
-    a_dot = savgol_filter(a, SMA_SMOOTH_WINDOW, 2, deriv=1, delta=h)
+    a_smooth = savgol_filter(a, window, 2)
+    a_dot = savgol_filter(a, window, 2, deriv=1, delta=h)
     near_edge = np.zeros(len(t), dtype=bool)
     buffer = int(EDGE_BUFFER_S / step_s)
     starts = np.flatnonzero(np.diff(events) != 0)
@@ -97,8 +98,9 @@ def library(a, s, a_ref):
 # ---------------------------------------------------------------------------
 # SINDy and the Bayesian version
 # ---------------------------------------------------------------------------
-def stlsq(theta, target, threshold=STLSQ_THRESHOLD, iterations=10):
+def stlsq(theta, target, threshold=None, iterations=10):
     """Sequentially thresholded least squares on unit-scaled columns. Returns unscaled coefficients."""
+    threshold = threshold if threshold is not None else tuned("stlsq_threshold")
     scale = np.linalg.norm(theta, axis=0)
     X = theta / scale
     active = np.ones(X.shape[1], dtype=bool)
