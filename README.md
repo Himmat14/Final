@@ -24,7 +24,7 @@ python main.py --stages step6 gmm --out my_results
 python -m unittest discover tests # quick sanity checks
 ```
 
-`main.py` runs 21 stages (step 0 tuning first) (the report steps 1-9 plus the workstream stages) and writes every figure
+`main.py` runs 31 stages (step 0 tuning first, steps 1-18 with the workstream stages after their step) (the report steps 1-9 plus the workstream stages) and writes every figure
 into `outputs/report/stepN_*/` and every number into `outputs/results.json`. Nothing is hand-edited.
 
 ## Step 0: bias-variance tuning (runs first, results carried forward)
@@ -38,11 +38,12 @@ saved to `.cache/tuned_settings_v1.json`. Every later step reads it through `dea
 
 | Setting | Default | Tuned | How it was chosen |
 |---|---|---|---|
-| `fd_order` (steps 2-4) | 6 | 4 | MSE of cd from 10 m noisy 1-min positions (order 4 also wins on clean 1-min data) |
+| `fd_order` (steps 2-4) | 6 | per step: 1 min 4, 2 min 2, 5 min 6, 10 min 6 | MSE of cd from 10 m noisy positions at each sampling step (`settings.fd_order_for(step)`; one global order was wrong for the 10-min Kalman comparison) |
 | `sg_window`, `sg_order` (steps 6-9) | 21, 5 | 61, 5 | MSE of the classifier's v' (coast and burn weighted equally) |
+| `sg_window_stacked` (step 8) | 21, 5 | 41, 5 | bias^2 + noise^2 x variance / N: averaging N = 92 burns removes variance, not bias, so a shorter window wins |
 | `derivative_method` (steps 6-9) | Savitzky-Golay | Savitzky-Golay | walk-forward / walk-backward event F1 (below) |
 | `gmm_components` (all GMMs) | 4 | 4 | bias^2 + variance of P(burn \| x) (Brier score), one-standard-error rule |
-| `sma_window` (step 9) | 41 | 21 | MSE of the mean-SMA derivative |
+| `sma_window` (step 9) | 41 | 41 | MSE of the learned coast and burn RATES (what drives the burn forecast) |
 | `stlsq_threshold` (step 9) | 0.05 | 0.05 | MSE of the SINDy law's predicted da/dt on TEST (the sparsest law within 1%) |
 
 **Choosing the GMM's derivative method by walk-forward / walk-backward testing.** For each way of
@@ -52,6 +53,41 @@ a 40-day window and tested out of sample over the 15, 30, 60, 120, 240 and 360 d
 done at 0.25, 0.5 and 1 x the reference noise. At the reference noise only Savitzky-Golay keeps
 F1 = 1.0 in all 12 periods. The central differences already fail at 0.5 x (8th order even at 0.25 x),
 because they amplify the noise.
+
+## Step 6 stress test: largest usable sampling step
+
+`deadband/stress.py`, figures `step6_step_stress*`. The step 6 GMM is run on noisy data (0 to 4 x the reference
+noise) sampled every 6 s up to 60 min, with two ways of measuring the unmodelled acceleration:
+* the step 6 Savitzky-Golay derivative works up to a **2 min** step (12 s at 4 x noise);
+* propagating each state one step with gravity + J2 and dividing the velocity mismatch by the step works
+  from about 1 min up to **20 min** at every noise level, because its noise shrinks as the step grows. Beyond
+  one burn length (23 min) the burn is diluted into one interval and false events appear.
+
+Switching between the two features at about 2 min gives F1 >= 0.9 from 6 s to 20 min at every noise level tested.
+
+## Extensions towards the UK Space Agency brief (steps 10-18)
+
+Steps 10-16 run on a **mean-element model** (`deadband/mean_element.py`): only the mean SMA and the
+thruster state, `da/dt = -k w(t) exp(-(a - a_ref)/H) + T s` with the same hysteresis law. It is calibrated
+on the full 6-s controlled run (`calibrate()`: coast rate, thrust and the effective band edges) and
+reproduces it to 0.01% in burn period (`step10_model_check.png`, `tests/test_extensions.py`). It makes 400-day
+scenarios run in about a second.
+
+| Step | Folder | What it shows | Library |
+|---|---|---|---|
+| 10 | `step10_space_weather` | variable drag (27-day rotation, trend, storms): with constant drag the periodic baseline wins (2-3 min vs 70-630 min); with space-weather drag it misses by ~27 h, the law with a space-weather proxy ~12 h at 15 days, and with a perfect space-weather forecast ~3 h | `mean_element.py`, `forecasting.py` |
+| 11 | `step11_observations` | 8-min tracking passes (12-s positions), per-pass orbit fits (batched Gauss-Newton), burns found in the gaps: F1 ~1 at 10 m noise for 1-8 passes/day; at 100 m only the multi-pass test finds some (F1 0.47 at 8/day); OEM reader for real ephemerides (`data/ephemeris/`) | `observation.py` |
+| 12 | `step12_conjunction` | along-track error at TCA (drag-only prediction: 19 km at 1 day, ~1500 km at 14 days; learned law + space weather: 6-12 km) and Pc screening: missed dangerous conjunctions and false alerts, honest vs catalogue-only covariance | `conjunction.py` |
+| 13 | `step13_tasking` | custody loss after burns (20 km association gate) vs observation budget: random 74% at 1 obs/day, manoeuvre-aware 48%, and 15-19% when the catalogue also carries the predicted burn | `conjunction.py` |
+| 14 | `step14_regimes` | orbit raising, station keeping, a band change and collision-avoidance burns on one satellite: 105/105 burns labelled correctly; the band change found at day 150.0 | `regimes.py` |
+| 15 | `step15_fleet` | 40 satellites: the three planted pattern-of-life changes flagged, no false flags; pooled (empirical-Bayes) drag estimates help with 4-8 days of data | `fleet.py` |
+| 16 | `step16_conformal` | split-conformal 90% burn-time intervals: 93-99% coverage on new data, interval widths per forecaster | `forecasting.py` |
+| 17 | `step17_geo` | GEO east-west / north-south boxes, chemical and electric propulsion; SINDy recovers the triaxiality law (A 0.00171 vs 0.0017, lambda_s 74.98 vs 75.07 deg) from a free drift; impulses detected from 6-hourly longitudes; E/W burns forecast 0.1-1.3 days off over 230 days | `geo.py` |
+| 18 | `step18_sindy_zoo` | ten candidate libraries per dataset (full-physics LEO, space-weather LEO, GEO): only the proxy libraries forecast variable drag; extra terms are pruned on the full-physics data; collinear "kitchen sink" libraries diverge; relative vs significance STLSQ thresholds fail in opposite ways | `sindy_zoo.py` |
+| 19 | `step19_sindy_split` | thrust law vs natural dynamics learned together (A), thrust only with drag known (B), drag only with thrust known (C) or separately on clean arcs (D), against the true model: joint learning biases T by -7.6%; separate learning recovers c_d and T to <0.1%; knowing the drag gives a 26-min error after 360 days. No deadband: the sqrt(a) / physics-shape law recovers c_d to 0.01% and the SMA a year ahead to 1 m | `sindy_split.py` |
+
+Also fixed: the GP detector in the `heldout` stage now picks its training coast samples from the GMM's
+labels, not from the true labels.
 
 ## Figure style
 

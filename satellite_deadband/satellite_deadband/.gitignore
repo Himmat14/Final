@@ -6,3 +6,9 @@ venv/
 .vscode/
 outputs/
 .cache/
+outputs_previous/
+outputs_run.log
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc

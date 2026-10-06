@@ -118,7 +118,7 @@ def _draw_heatmap(ax, rows):
     grid = np.array([[row["f1"][name] for row in rows] for name in MODELS])
     image = ax.imshow(grid, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
     ax.set(xticks=range(len(rows)), xticklabels=[f"{row['scale']:g}" for row in rows], yticks=range(len(MODELS)),
-           yticklabels=list(MODELS), xlabel="noise (x reference)", title="Event F1: method x noise")
+           yticklabels=list(MODELS), xlabel="noise (x reference)", ylabel="classifier", title="Event F1: method x noise")
     ax.grid(False)
     for i in range(grid.shape[0]):
         for j in range(grid.shape[1]):

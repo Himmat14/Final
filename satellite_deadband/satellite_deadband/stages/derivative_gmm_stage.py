@@ -112,6 +112,7 @@ def _plot_residual_timeline(evidence, fits, out_dir):
     axes[2].axvspan(-EVENT_TOLERANCE_S / 60, 0, color=GREY, alpha=0.2, label=f"+-{EVENT_TOLERANCE_S:.0f} s tolerance")
     axes[2].axvspan(to_minutes(end - start), to_minutes(end - start) + EVENT_TOLERANCE_S / 60, color=GREY, alpha=0.2)
     axes[2].set(yticks=range(len(SPACES)), yticklabels=[SPACE_LABELS[s] for s in SPACES], ylim=(-0.7, len(SPACES) - 0.3),
+                ylabel="derivative space",
                 xlabel="Minutes from burn start",
                 title="GMM: raw flagged samples (thin ticks) grouped into one detected event (thick bar)")
     axes[2].legend(fontsize=8, loc="center right")
@@ -253,10 +254,10 @@ def _plot_method_2d(table, out_dir):
                          f"false events {fit.event_scores['n_false_events']}", fontsize=9)
             ax.set_xlabel("log |unmodelled accel from v'|", fontsize=8)
             ax.grid(alpha=0.3)
+            ax.set_ylabel("along-track part [1e-4 m/s$^2$]", fontsize=8)
             if col == 0:
                 handles, names = ax.get_legend_handles_labels()
                 unique = dict(zip(names, handles))
-                ax.set_ylabel("along-track part [1e-4 m/s$^2$]")
                 ax.legend(unique.values(), unique.keys(), fontsize=7, loc="upper left")
     fig.suptitle("The two velocity features per derivative method: thrust pushes FORWARDS (up), "
                  "truncation error and noise do not", fontsize=12)
@@ -279,12 +280,13 @@ def _plot_method_floor(table, out_dir, drag_ms2):
                        label=f"{label}, {case}")       # small x offset so overlapping lines stay visible
     ax_floor.axhline(THRUST_ACCEL_MS2, color=AMBER, ls="--", label="thrust (2e-4 m/s$^2$)")
     ax_floor.axhline(drag_ms2, color=GREEN, ls="--", label=f"real drag ({drag_ms2:.1e} m/s$^2$)")
-    ax_floor.set(yscale="log", xticks=x, xticklabels=[_short(m) for m in DERIVATIVE_METHODS],
+    ax_floor.set(yscale="log", xticks=x, xticklabels=[_short(m) for m in DERIVATIVE_METHODS], xlabel="derivative method",
                  ylabel="median coasting |unmodelled accel| [m/s$^2$]",
                  title="Coast error floor: truncation (clean, solid) vs noise (noisy, hatched)")
     ax_floor.set_ylim(3e-7, 2e-3)
     ax_floor.legend(fontsize=7, loc="upper center", ncol=2)
-    ax_f1.set(xticks=x, xticklabels=[_short(m) for m in DERIVATIVE_METHODS], ylim=(-0.05, 1.1), ylabel="event F1",
+    ax_f1.set(xticks=x, xticklabels=[_short(m) for m in DERIVATIVE_METHODS], ylim=(-0.05, 1.1),
+              xlabel="derivative method", ylabel="event F1",
               title="Burn detection: tuned K vs 2 GMM components")
     ax_f1.legend(fontsize=7, loc="center left")
     ax_f1.text(0.02, 0.6, "with noise only Savitzky-Golay (smoothing) + the tuned K works:\n"
@@ -329,7 +331,8 @@ def _plot_method_comparison(scores, out_dir):
         ax_events.text(i - 0.2, scores[method]["n_found"], str(scores[method]["n_found"]), ha="center", va="bottom")
         ax_events.text(i + 0.2, scores[method]["n_false_events"], str(scores[method]["n_false_events"]),
                        ha="center", va="bottom")
-    ax_events.set(xticks=x, xticklabels=["Week 4" if m == "week4" else m for m in methods], ylabel="number of events",
+    ax_events.set(xticks=x, xticklabels=["Week 4" if m == "week4" else m for m in methods], xlabel="feature space",
+                  ylabel="number of events",
                   ylim=(0, 1.25 * max(n_burns, max(scores[m]["n_false_events"] for m in methods))),
                   title="Events, not samples")
     ax_events.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=3)
@@ -343,6 +346,7 @@ def _plot_method_comparison(scores, out_dir):
                      [scores[method][key] for _, key in rates], width, color=SPACE_COLORS[method],
                      label=SPACE_LABELS[method])
     ax_rates.set(xticks=range(len(rates)), xticklabels=[name for name, _ in rates], ylim=(0, 1.08),
+                 xlabel="event score", ylabel="score",
                  title=f"Event-level GMM scores, days 0-{SMOOTH_DAYS:g} of the controlled run, every {SAMPLE_STEP_MIN} min")
     ax_rates.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=len(methods))
     ax_rates.grid(alpha=0.3, axis="y")

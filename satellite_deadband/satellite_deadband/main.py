@@ -25,6 +25,9 @@ from stages import (deadband_stage, derivative_gmm_stage, detection_stage, gmm_s
 from stages.common import LABEL_REPORT
 from stages import (report_step1, report_step2, report_step3, report_step3_noise, report_step4,
                     report_step4_spectroscopy, report_step5, report_step6, report_step7, report_step8, report_step9)
+from stages import (report_step10_space_weather, report_step11_observations, report_step12_conjunction,
+                    report_step13_tasking, report_step14_regimes, report_step15_fleet, report_step16_conformal,
+                    report_step17_geo, report_step18_sindy_zoo, report_step19_sindy_split)
 
 # name -> (description, module), in the order they run. Every stage reads the SAME cached 400-day
 # simulations (deadband/long_run.py) and writes into the folder of the report step it belongs to,
@@ -51,6 +54,18 @@ STAGES = {
     "detection": ("  + Workstream C/G five basic detectors vs noise and sampling step", detection_stage),
     "step8": ("Report 8  repetition: autocorrelation, stacking, GP thrust law", report_step8),
     "step9": ("Report 9  SINDy / BINDy control law and burn forecasting", report_step9),
+    # Extensions towards the brief (mean-element model calibrated on the full run, see deadband/mean_element.py)
+    "step10": ("Report 10 space-weather drag: learned law vs periodic burn forecasts", report_step10_space_weather),
+    "step11": ("Report 11 realistic tracking passes, per-pass orbit fits, burns found in the gaps", report_step11_observations),
+    "step12": ("Report 12 close-approach screening with and without manoeuvre prediction", report_step12_conjunction),
+    "step13": ("Report 13 sensor tasking and track association", report_step13_tasking),
+    "step14": ("Report 14 several control laws: raising, band change, collision avoidance", report_step14_regimes),
+    "step15": ("Report 15 fleet of 40: pattern-of-life change detection and pooled estimates", report_step15_fleet),
+    "step16": ("Report 16 calibrated (conformal) burn-time intervals", report_step16_conformal),
+    "step17": ("Report 17 GEO east-west / north-south station keeping, chemical and electric", report_step17_geo),
+    "step18": ("Report 18 SINDy equation zoo: many candidate laws on three datasets", report_step18_sindy_zoo),
+    "step19": ("Report 19 thrust law vs natural dynamics learned together / apart, and with no deadband",
+               report_step19_sindy_split),
 }
 
 

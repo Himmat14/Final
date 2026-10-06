@@ -71,7 +71,7 @@ def _draw_activation(ax, dataset):
     for start, end in runs_of_ones(dataset.t[window], dataset.true_on[window]):
         ax.axvspan(to_days(start), to_days(end), color=RUST, lw=0)
     ax.set_yticks([])
-    ax.set(xlim=(TRAIN_DAYS, TRAIN_DAYS + TIMELINE_DAYS), xlabel="time [days]",
+    ax.set(xlim=(TRAIN_DAYS, TRAIN_DAYS + TIMELINE_DAYS), xlabel="time [days]", ylabel="dynamics",
            title="Activation timeline: which dynamics drive the satellite (each burn lasts ~23 min every ~3.9 days)")
     ax.legend(handles=[Patch(color=SKY, label="coast: gravity + J2 + drag only"),
                        Patch(color=RUST, label="burn: thruster on (throttle > 1/2)")], loc="upper right")
@@ -117,6 +117,7 @@ def _draw_methods_timeline(ax, dataset, results):
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels(list(rows))
     ax.set(xlim=(TRAIN_DAYS, TRAIN_DAYS + TIMELINE_DAYS), ylim=(-0.6, len(rows) - 0.4), xlabel="time [days]",
+           ylabel="detector",
            title="What each detector flags as burn EVENTS, first 15 TEST days (reference noise)")
     for y, (name, (_, scores)) in enumerate(results.items(), start=1):
         ax.text(TRAIN_DAYS + TIMELINE_DAYS, y, f"  F1 {scores['f1']:.2f}, {scores['n_false_events']} false",

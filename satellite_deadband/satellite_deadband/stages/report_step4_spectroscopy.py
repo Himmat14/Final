@@ -196,7 +196,8 @@ def _draw_composition(ax, d):
         values = [max(shares[name], 1e-10) for name in FORCES]
         ax.bar(x + (i - (len(names) - 1) / 2) * width, values, width, color=color, label=label,
                hatch="//" if label.startswith("spectral power") else "")
-    ax.set(yscale="log", ylim=(1e-9, 300), xticks=x, xticklabels=FORCES, ylabel="share of the perturbing force [%]",
+    ax.set(yscale="log", ylim=(1e-9, 300), xticks=x, xticklabels=FORCES, xlabel="force",
+           ylabel="share of the perturbing force [%]",
            title=f"Composition from the spectrum ({d['days']} days): sqrt(power) matches the budget, power does not")
     ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=4)
     ax.text(0.99, 0.97, "power ~ amplitude$^2$: J2's 99.98% becomes 99.999999%\n"
@@ -229,7 +230,8 @@ def _draw_random_mixtures(ax, mixtures):
             box.set(facecolor=color, alpha=0.6)
         ax.plot([], [], "s", color=color, label=method)
     ax.axhline(1, color="black", lw=0.8)
-    ax.set(yscale="log", ylim=(1e-2, 1e2), xticks=positions, xticklabels=FORCES, ylabel="recovered / true strength",
+    ax.set(yscale="log", ylim=(1e-2, 1e2), xticks=positions, xticklabels=FORCES, xlabel="force",
+           ylabel="recovered / true strength",
            title=f"{N_RANDOM_MIXTURES} random mixtures (each force x 0.1 ... x 10), {SHOWCASE_DAYS} days")
     ax.legend(fontsize=7, loc="upper left")
 

@@ -65,7 +65,7 @@ def _draw_clusters(axes, exp):
             ax.scatter(X[flagged, 0], X[flagged, 1], facecolors="none", edgecolors=NAVY, s=30, lw=0.6, zorder=3)
         ax.scatter(X[coast, 0], X[coast, 1], c=BURN_GREY, s=3, alpha=0.5, lw=0)
         ax.scatter(X[burn, 0], X[burn, 1], c=RUST, s=4)
-        ax.set(xlim=x_limits, ylim=y_limits)
+        ax.set(xlim=x_limits, ylim=y_limits, xlabel="log |accel from v'|", ylabel="along-track [1e-4 m/s$^2$]")
         title = name if name != H.BAYESIAN_GMM_NAME else f"{name} ({exp.info[name]['n_active']} active comp.)"
         row = rows[name]
         ax.set_title(f"{title}\nevent F1 {row['f1']:.2f}, false events {row['n_false_events']}", fontsize=9)
@@ -157,7 +157,7 @@ def _draw_bars(ax, exp):
         ax.bar(x + offset, [row[key] * 100 for row in exp.rows], 0.27, color=color, label=label)
     ax.set_xticks(x)
     ax.set_xticklabels(names, rotation=20, ha="right", fontsize=8)
-    ax.set(ylabel="score [%]", ylim=(0, 108), title="All methods, event scores on the same held-out TEST days (40-100)")
+    ax.set(xlabel="detector", ylabel="score [%]", ylim=(0, 108), title="All methods, event scores on the same held-out TEST days (40-100)")
     ax.legend(loc="upper center", ncol=3)
 
 

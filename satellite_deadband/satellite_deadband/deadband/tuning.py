@@ -18,6 +18,9 @@ The six studies (all on the report's cached 400-day data)
 1. fd_order          FD stencil order (2, 4, 6, 8) for cd from noisy positions (steps 2-4).
                      Low order: truncation BIAS. High order: noise amplification, VARIANCE.
 2. sg_window, sg_order   Savitzky-Golay window x order for the classifier's v' (steps 6-9).
+   sg_window_stacked     the same study re-weighted for STEP 8, which averages ~92 noisy burns (at 2x the
+                     reference noise): stacking divides the variance by N but not the bias, so the best
+                     window minimises bias^2 + (noise scale)^2 x variance / N, i.e. a much SHORTER window.
                      Short window: noise VARIANCE. Long window: smears the burn edges, BIAS.
                      Scored on coast and burn samples with equal weight (burns are only 0.4% of samples).
 3. derivative_method WALK-FORWARD and WALK-BACKWARD testing of the burn GMM for each way of
@@ -32,7 +35,11 @@ The six studies (all on the report's cached 400-day data)
                      burn weighted equally). Small K: BIAS (cannot represent the clusters). Large K:
                      VARIANCE (components move from one re-fit to the next). Chosen: the smallest K
                      within one standard error of the lowest Brier score (the "one-standard-error rule").
-5. sma_window        Savitzky-Golay window of the mean-SMA derivative used by SINDy (step 9).
+5. sma_window        Savitzky-Golay window of the mean-SMA derivative used by SINDy (step 9). SINDy
+                     only uses the CLUSTER RATES (the average da/dt while coasting and while burning,
+                     edges left out), and a bias of a few parts in 10^4 in the coast rate is what makes
+                     a year-long burn forecast drift. So the score is the relative error [ppm] of the two
+                     learned cluster rates (coast and burn weighted equally), not the per-sample error.
 6. stlsq_threshold   SINDy sparsity threshold: too high drops real terms (BIAS), too low keeps
                      noise-fitted distractors (VARIANCE). Scored on the predicted da/dt on TEST.
 """
@@ -52,7 +59,7 @@ from .smooth_controller import mean_sma_km_series
 
 # --- study grids -------------------------------------------------------------------------------------
 FD_ORDERS = (2, 4, 6, 8)
-FD_STEPS_MIN = (1, 2, 5)
+FD_STEPS_MIN = (1, 2, 5, 10)
 FD_DAYS, FD_SEEDS = 15, 20
 FD_NOISE_KM = 0.01                                # the reference noise of steps 3-4: the setting is chosen here
 FD_NOISES_KM = (0.0, 0.001, 0.01)                 # also shown: how the optimum moves with the noise
@@ -102,8 +109,11 @@ def study_fd_order():
                 bias_sq, variance, mse = _decompose(estimates, 0.0)
                 rows.append(dict(noise_km=noise, step_min=step, order=order, bias_sq=bias_sq, variance=variance,
                                  mse=mse))
-    reference = [r for r in rows if r["step_min"] == FD_STEPS_MIN[0] and r["noise_km"] == FD_NOISE_KM]
-    return rows, int(min(reference, key=lambda r: r["mse"])["order"])
+    by_step = {}
+    for step in FD_STEPS_MIN:                          # the best order at the reference noise, per sampling step
+        reference = [r for r in rows if r["step_min"] == step and r["noise_km"] == FD_NOISE_KM]
+        by_step[str(step)] = int(min(reference, key=lambda r: r["mse"])["order"])
+    return rows, by_step
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +125,15 @@ def _true_unmodelled_ms2(dataset):
     speed = np.linalg.norm(v, axis=0)
     drag = -SMOOTH_CD * speed * v * ACCEL_UNIT_MS2
     return dataset.thrust_ms2 * v / speed + drag
+
+
+STACK_N, STACK_NOISE_SCALE = 92, 2.0          # step 8: burns stacked, noise multiple
+
+
+def stacked_choice(sg_rows):
+    """(window, order) minimising bias^2 + noise^2 * variance / N: the optimum once N burns are averaged."""
+    best = min(sg_rows, key=lambda r: r["bias_sq"] + STACK_NOISE_SCALE**2 * r["variance"] / STACK_N)
+    return int(best["window"]), int(best["order"])
 
 
 def study_sg():
@@ -251,16 +270,22 @@ def _sindy_data(window, seeds):
 
 
 def study_sma_window():
+    """Relative error [ppm] of the learned coast and burn rates (TRAIN cluster means of da/dt) vs the truth."""
     rows = []
     for window in SMA_WINDOWS:
         dataset, truth, noisy = _sindy_data(window, SINDY_SEEDS)
-        on = dataset.true_on == 1
-        estimates = np.array([d.a_dot for d in noisy]) * TO_M_PER_HOUR
-        truth_m = truth * TO_M_PER_HOUR
-        coast = _decompose(estimates[:, ~on], truth_m[~on])
-        burn = _decompose(estimates[:, on], truth_m[on])
-        rows.append(dict(window=window, window_s=window * SAMPLE_STEP_S, bias_sq=0.5 * (coast[0] + burn[0]),
-                         variance=0.5 * (coast[1] + burn[1]), mse=0.5 * (coast[2] + burn[2])))
+        parts = []
+        for cluster in ("coast", "burn"):
+            estimates, truths = [], []
+            for data in noisy:
+                rows_c = getattr(data, cluster) & dataset.train
+                estimates.append(np.mean(data.a_dot[rows_c]))
+                truths.append(np.mean(truth[rows_c]))
+            true_rate = np.mean(truths)
+            parts.append(_decompose((np.array(estimates) / true_rate - 1) * 1e6, 0.0))
+        rows.append(dict(window=window, window_s=window * SAMPLE_STEP_S, bias_sq=0.5 * (parts[0][0] + parts[1][0]),
+                         variance=0.5 * (parts[0][1] + parts[1][1]), mse=0.5 * (parts[0][2] + parts[1][2]),
+                         coast_mse=parts[0][2], burn_mse=parts[1][2]))
     return rows, int(min(rows, key=lambda r: r["mse"])["window"])
 
 
@@ -296,9 +321,11 @@ def study_stlsq(sma_window):
 def run_all(log=print):
     studies, chosen = {}, {}
     log("    tuning 1/6: FD stencil order ...")
-    studies["fd_order"], chosen["fd_order"] = study_fd_order()
+    studies["fd_order"], chosen["fd_order_by_step"] = study_fd_order()
+    chosen["fd_order"] = chosen["fd_order_by_step"][str(FD_STEPS_MIN[0])]
     log("    tuning 2/6: Savitzky-Golay window and order ...")
     studies["sg"], chosen["sg_window"], chosen["sg_order"] = study_sg()
+    chosen["sg_window_stacked"], chosen["sg_order_stacked"] = stacked_choice(studies["sg"])
     log("    tuning 3/6: walk-forward / walk-backward test of the derivative methods ...")
     rows, summary, chosen["derivative_method"] = study_walk_forward(chosen["sg_window"], chosen["sg_order"],
                                                                    settings.DEFAULTS["gmm_components"])

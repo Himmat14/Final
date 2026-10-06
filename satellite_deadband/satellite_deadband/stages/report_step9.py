@@ -108,7 +108,9 @@ def forecasts(dataset, events, data, laws, switching):
         ensemble_onsets.append(match_onsets(onset_times(t_s, s), actual) + actual)
         ensemble_sma.append(a)
     ensemble_onsets = np.array(ensemble_onsets)
-    out["BINDy ensemble"] = dict(onsets=np.nanmean(ensemble_onsets, axis=0), sma=np.mean(ensemble_sma, axis=0),
+    # median, not mean: a member that slips by more than half a cycle is matched to the neighbouring burn
+    # and would drag a mean far off; the median ignores such outliers
+    out["BINDy ensemble"] = dict(onsets=np.nanmedian(ensemble_onsets, axis=0), sma=np.mean(ensemble_sma, axis=0),
                                  sma_low=np.percentile(ensemble_sma, 5, axis=0),
                                  sma_high=np.percentile(ensemble_sma, 95, axis=0),
                                  onset_spread_s=np.nanstd(ensemble_onsets, axis=0))
@@ -177,7 +179,7 @@ def _draw_coefficients(ax, laws, data, dataset):
         if value == 0:
             ax.text(0.02, i + 0.18, "removed", va="center", fontsize=8, color=SLATE)
     ax.set_xscale("symlog", linthresh=1e-3)
-    ax.set(yticks=y, yticklabels=LIBRARY_NAMES, xlabel="contribution to da/dt [mm/s] (symlog)",
+    ax.set(yticks=y, yticklabels=LIBRARY_NAMES, xlabel="contribution to da/dt [mm/s] (symlog)", ylabel="library term",
            title="Learned law: only the two cluster terms survive")
     ax.axvline(0, color="black", lw=0.8)
     ax.legend(loc="lower right")
@@ -195,7 +197,8 @@ def _draw_physics(ax, laws):
     ax.axhline(1, color="black", lw=1)
     for i, (s, b) in enumerate(((cd_s / SMOOTH_CD, cd_b / SMOOTH_CD), (thrust_s / THRUST_ACCEL, thrust_b / THRUST_ACCEL))):
         ax.text(i, 1.012, f"{s:.4f} / {b:.4f}", ha="center", fontsize=8)
-    ax.set(xticks=x, xticklabels=["drag cd", "thrust level T"], ylim=(0.97, 1.02), ylabel="learned / true",
+    ax.set(xticks=x, xticklabels=["drag cd", "thrust level T"], ylim=(0.97, 1.02), xlabel="physical parameter",
+           ylabel="learned / true",
            title="Physics read off the learned law")
     ax.legend(loc="upper right")
 
@@ -246,10 +249,10 @@ def _draw_errors(ax, out, actual, t0):
     ax.axhline(0, color="black", lw=0.8)
     ax.set(xlabel="days ahead (forecast from day 40)", ylabel="predicted - true onset [min]",
            title="Forecast timing error, burn by burn")
-    ax.text(0.02, 0.03, "SINDy and random forest learn the same coast rate (the cluster mean of da/dt);\n"
-                        "its 2.5e-4 error shortens every coast by ~30 s and adds up over 92 cycles",
-            transform=ax.transAxes, fontsize=7, color=SLATE, ha="left", va="bottom")
-    ax.legend(fontsize=7, loc="upper left")
+    ax.text(0.98, 0.97, "SINDy and the random forest learn the coast rate from 40 days of noisy da/dt;\n"
+                        "a few-hundred-ppm rate error shortens every coast and adds up over 92 cycles",
+            transform=ax.transAxes, fontsize=7, color=SLATE, ha="right", va="top")
+    ax.legend(fontsize=7, loc="lower left")
 
 
 def horizon_errors(out, actual, t0):

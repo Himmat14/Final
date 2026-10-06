@@ -205,8 +205,8 @@ def _draw_miss(ax, trace):
 def _draw_horizon_metrics(ax, rows):
     x = np.arange(len(rows))
     ax.bar(x - 0.2, [row["n_burns"] for row in rows], 0.4, color=NAVY, label="burns")
-    ax.set(xticks=x, xticklabels=[f"{row['days']} d" for row in rows], ylabel="number of burns",
-           title="Burns and fuel by horizon")
+    ax.set(xticks=x, xticklabels=[f"{row['days']} d" for row in rows], xlabel="horizon [days]",
+           ylabel="number of burns", title="Burns and fuel by horizon")
     twin = ax.twinx()
     twin.bar(x + 0.2, [row["delta_v_ms"] for row in rows], 0.4, color=RUST, label="delta-v")
     twin.set_ylabel("total delta-v [m/s]", color=RUST)
@@ -244,6 +244,6 @@ def run(sim, out_dir):
         _draw_fuel(axes[1, 2], fuel)
         for ax, letter in zip(axes.ravel(), "abcdef"):
             panel_label(ax, letter)
-        save(fig, folder, "step5_summary.png", suptitle="Step 5: deadband control with a smooth (tanh) thruster, 8 and 400 days")
+        save(fig, folder, "step5_summary.png", suptitle="Step 5: deadband control with a smooth (tanh) thruster, 10 and 400 days")
 
     return dict(report_step5=dict(fuel_vs_band=fuel, long_term_by_horizon=horizon_rows))

@@ -21,7 +21,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from deadband.burn_folding import (autocorrelation, dominant_period, fit_thrust_law, noise_vs_bursts, stack_bursts)
-from deadband.classifiers import MODELS, detection_dataset, evaluate, noisy_features
+from deadband.classifiers import MODELS, build_features, detection_dataset, evaluate, noisy_features
+from deadband.settings import tuned
 from deadband.constants import TU, to_days
 from deadband.long_run import HORIZONS_DAYS
 from deadband.derivative_detection import runs_of_ones
@@ -40,7 +41,11 @@ def prepare():
     dataset = detection_dataset()
     features, (r, v) = noisy_features(dataset, NOISE_SCALE)
     events = evaluate(dataset, features, methods={"Bayesian GMM": MODELS["Bayesian GMM"]})["Bayesian GMM"].events
-    signal = features.along_track                         # noisy unmodelled along-track acceleration [m/s^2]
+    # the stacked signal uses its own tuned derivative window: averaging N burns removes variance, not bias,
+    # so a shorter (lower-bias) window than the classifier's is optimal here (deadband/tuning.stacked_choice)
+    stacked_features = build_features(r, v, dataset.step_s, window=tuned("sg_window_stacked"),
+                                      order=tuned("sg_order_stacked"), method="Savitzky-Golay")
+    signal = stacked_features.along_track                 # noisy unmodelled along-track acceleration [m/s^2]
     step = dataset.step_s
 
     acf = autocorrelation(signal[dataset.test], int(MAX_LAG_DAYS * 86400 / step))
@@ -172,7 +177,7 @@ def _draw_parameters(ax, d):
     ax.axvline(1, color="black", lw=1)
     for i, value in enumerate(values):
         ax.text(value + 0.02, i, f"{value:.3f}", va="center")
-    ax.set(xlim=(0, 1.6), xlabel="learned / true", title="Thrust law learned from noisy data")
+    ax.set(xlim=(0, max(1.6, max(values) * 1.25)), xlabel="learned / true", ylabel="quantity", title="Thrust law learned from noisy data")
 
 
 # ---------------------------------------------------------------------------

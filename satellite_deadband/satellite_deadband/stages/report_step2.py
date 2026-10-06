@@ -22,6 +22,7 @@ from matplotlib.ticker import NullFormatter
 
 from deadband.constants import ACCEL_UNIT_MS2, J2, MU, SMOOTH_CD, from_days
 from deadband.long_run import HORIZONS_DAYS, natural_run
+from deadband.settings import tuned
 from deadband.perturbations import propagate_full
 from deadband.physics import drag_accel, gravity_accel, j2_accel
 from deadband.regression import (TRUE_PERTURBATION_VALUES, add_position_noise, fd_acceleration_error,
@@ -82,7 +83,7 @@ def stencil_order_comparison(days=15):
     t, positions, h = _window(days)
     noisy = add_position_noise(positions, NOISE_KM, seed=2)
     return {order: dict(mu=_percent(fit_mu(noisy, h, order, j2=J2), MU),
-                        cd=_percent(fit_cd(noisy, h, order, j2=J2), SMOOTH_CD)) for order in (2, 6, 8)}
+                        cd=_percent(fit_cd(noisy, h, order, j2=J2), SMOOTH_CD)) for order in (2, 4, 6, 8)}
 
 
 def drag_fit_data(days=1):
@@ -134,10 +135,11 @@ def _draw_fd_error(ax, rows, drag_level):
 
 
 def _draw_orders(ax, orders):
-    x = np.arange(3)
-    ax.bar(x - 0.2, [orders[o]["mu"] for o in (2, 6, 8)], 0.4, color=NAVY, label="mu")
-    ax.bar(x + 0.2, [orders[o]["cd"] for o in (2, 6, 8)], 0.4, color=RUST, label="cd")
-    ax.set(xticks=x, xticklabels=["order 2", "order 6", "order 8"], yscale="log", ylabel="error [%]",
+    x = np.arange(len(orders))
+    ax.bar(x - 0.2, [orders[o]["mu"] for o in orders], 0.4, color=NAVY, label="mu")
+    ax.bar(x + 0.2, [orders[o]["cd"] for o in orders], 0.4, color=RUST, label="cd")
+    ax.set(xticks=x, xticklabels=[f"order {o}" + (" (tuned)" if o == tuned("fd_order") else "") for o in orders],
+           yscale="log", xlabel="FD stencil order", ylabel="error [%]",
            title=f"Stencil order ({NOISE_KM * 1000:.0f} m noise, 1 min, 15 days)")
     ax.legend()
 
@@ -166,7 +168,7 @@ def _draw_correlation(ax, correlation):
     names = [n.split(" ")[0] for n in TRUTHS]
     image = ax.imshow(np.abs(correlation), cmap="Reds", vmin=0, vmax=1)
     ax.set(xticks=range(len(names)), yticks=range(len(names)), xticklabels=names, yticklabels=names,
-           title="|correlation| between fit columns (360 d)")
+           xlabel="fit column", ylabel="fit column", title="|correlation| between fit columns (360 d)")
     ax.grid(False)
     for i in range(len(names)):
         for j in range(len(names)):

@@ -66,7 +66,9 @@ def sma_data(t, r, v, events, step_s, window=None):
     a_smooth = savgol_filter(a, window, 2)
     a_dot = savgol_filter(a, window, 2, deriv=1, delta=h)
     near_edge = np.zeros(len(t), dtype=bool)
-    buffer = int(EDGE_BUFFER_S / step_s)
+    # the detected burn edges are smeared by half the classifier's derivative window (tuned "sg_window"),
+    # so the buffer grows with it: otherwise thruster-ramp samples leak into the coast and burn clusters
+    buffer = int((EDGE_BUFFER_S + tuned("sg_window") * step_s / 2) / step_s)
     starts = np.flatnonzero(np.diff(events) != 0)
     for i in starts:
         near_edge[max(0, i - buffer):i + buffer + 1] = True
@@ -102,8 +104,10 @@ def stlsq(theta, target, threshold=None, iterations=10):
     """Sequentially thresholded least squares on unit-scaled columns. Returns unscaled coefficients."""
     threshold = threshold if threshold is not None else tuned("stlsq_threshold")
     scale = np.linalg.norm(theta, axis=0)
+    empty = scale == 0                                     # a column that is zero in the data cannot be fitted
+    scale = np.where(empty, 1.0, scale)
     X = theta / scale
-    active = np.ones(X.shape[1], dtype=bool)
+    active = ~empty
     xi = np.zeros(X.shape[1])
     for _ in range(iterations):
         xi[:] = 0
@@ -113,6 +117,35 @@ def stlsq(theta, target, threshold=None, iterations=10):
             break
         active = new_active
     return xi / scale
+
+
+def stlsq_significance(theta, target, t_min=3.0, iterations=10):
+    """
+    Sequentially thresholded least squares with a STATISTICAL threshold: a term is dropped when its
+    coefficient is smaller than t_min standard errors (|xi| / se < t_min), not when it is small compared
+    with the LARGEST coefficient. Classic STLSQ wrongly prunes a small but well-measured term (the coast
+    drag, ~5 m/h) next to a huge rare one (the burn, ~1300 m/h); this version keeps it.
+    """
+    n, k = theta.shape
+    active = np.linalg.norm(theta, axis=0) > 0
+    xi = np.zeros(k)
+    for _ in range(iterations):
+        xi[:] = 0
+        X = theta[:, active]
+        coef, *_ = np.linalg.lstsq(X, target, rcond=None)
+        resid = target - X @ coef
+        dof = max(n - active.sum(), 1)
+        cov = np.linalg.pinv(X.T @ X) * (resid @ resid) / dof
+        se = np.sqrt(np.maximum(np.diag(cov), 1e-300))
+        xi[active] = coef
+        keep = np.abs(coef) / se >= t_min
+        if keep.all():
+            break
+        idx = np.flatnonzero(active)
+        active[idx[~keep]] = False
+        if not active.any():
+            break
+    return xi
 
 
 def bayesian_sparse_fit(theta, target):

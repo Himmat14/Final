@@ -58,7 +58,7 @@ STYLE = {
     "grid.linewidth": 0.6,
     "grid.alpha": 0.5,
     "lines.linewidth": 1.6,
-    "axes.prop_cycle": cycler(color=METHOD_COLORS) + cycler(linestyle=LINE_STYLES),
+    "axes.prop_cycle": cycler(color=METHOD_COLORS),     # colours only: line styles are chosen per chart
     "figure.dpi": 100,
 }
 plt.rcParams.update(STYLE)
@@ -94,9 +94,11 @@ def _style_axes(ax):
         ax.grid(True, which="major", color="#B0B0B0", lw=0.6, alpha=0.55)
         ax.grid(True, which="minor", color="#D0D0D0", lw=0.4, alpha=0.45, ls=":")
         ax.set_axisbelow(True)
-    solid = [line for line in ax.get_lines()
-             if not line.get_label().startswith("_") and line.get_linestyle() == "-" and len(line.get_xdata()) > 2]
-    if len(solid) >= 3:                       # three or more solid labelled lines: make them distinguishable
+    labelled = [line for line in ax.get_lines() if not line.get_label().startswith("_") and len(line.get_xdata()) > 2]
+    solid = [line for line in labelled if line.get_linestyle() == "-"]
+    # only when the chart's author left EVERY labelled line solid: restyle three or more of them so they
+    # can be told apart (a chart that already uses line styles on purpose is left alone)
+    if len(solid) >= 3 and len(solid) == len(labelled):
         for line, style in zip(solid[1:], LINE_STYLES[1:] * 3):
             line.set_linestyle(style)
     legend = ax.get_legend()
@@ -113,8 +115,15 @@ def _check_labels(fig, filename):
         if ax.get_label() == "<colorbar>":
             continue
         name = ax.get_title() or f"panel {i}"
-        missing = [what for what, text in (("title", ax.get_title()), ("x label", ax.get_xlabel()),
-                                           ("y label", ax.get_ylabel())) if not text]
+        # panels that share an axis (stacked plots, twin axes, rows with a common y axis) only need
+        # the label / title once in their group
+        x_group = [a for a in ax.get_shared_x_axes().get_siblings(ax) if a is not ax]
+        y_group = [a for a in ax.get_shared_y_axes().get_siblings(ax) if a is not ax]
+        title = ax.get_title() or any(a.get_title() for a in x_group + y_group)
+        xlabel = ax.get_xlabel() or any(a.get_xlabel() for a in x_group)
+        ylabel = ax.get_ylabel() or any(a.get_ylabel() for a in y_group) or (
+            x_group and any(a.get_ylabel() for a in x_group if a.bbox.bounds == ax.bbox.bounds))   # twin axes
+        missing = [what for what, text in (("title", title), ("x label", xlabel), ("y label", ylabel)) if not text]
         if getattr(ax, "name", "") == "3d" and not ax.get_zlabel():
             missing.append("z label")
         if missing and not (fig._suptitle is not None and missing == ["title"]):

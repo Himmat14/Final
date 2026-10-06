@@ -20,7 +20,8 @@ from .constants import DU, EARTH_EQUATORIAL_RADIUS_KM, J2, MU
 from .perturbations import (MOON_DISTANCE, MU_MOON, MU_SUN, SRP_ACCEL, moon_position, srp_accel, sun_position,
                             third_body_accel)
 from .physics import gravity_accel, j2_accel
-from .settings import tuned
+from .constants import TU
+from .settings import fd_order_for
 
 # ---------------------------------------------------------------------------
 # Finite-difference stencils (central differences, weights for points i-k ... i+k)
@@ -57,7 +58,7 @@ def fd_velocity_and_acceleration(positions, h, order=None):
     FD velocity and acceleration from (3, N) positions; both trimmed to the same interior points.
     `order` defaults to the stencil order chosen by the bias-variance tuning (settings.tuned("fd_order")).
     """
-    order = order or tuned("fd_order")
+    order = order or fd_order_for(h * TU / 60)          # tuned order for this sampling step
     weights_v, div_v = FIRST_DERIVATIVE[order]
     weights_a, div_a = SECOND_DERIVATIVE[order]
     velocity = apply_stencil(positions, weights_v, div_v, h, 1)
@@ -187,7 +188,7 @@ def add_position_noise(positions, noise_km, seed=0):
 
 def fd_acceleration_error(positions, h, true_accel, order=None):
     """RMS error of the FD acceleration against the exact acceleration at the same interior points."""
-    order = order or tuned("fd_order")
+    order = order or fd_order_for(h * TU / 60)
     weights_a, div_a = SECOND_DERIVATIVE[order]
     accel = apply_stencil(positions, weights_a, div_a, h, 2)
     half = len(weights_a) // 2

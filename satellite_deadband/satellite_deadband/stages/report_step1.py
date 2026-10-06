@@ -193,7 +193,7 @@ def _draw_force_budget(ax, forces):
     ax.set_xscale("log")
     for i, value in enumerate(means):
         ax.text(value * 1.3, i, f"{value:.1e}", va="center", fontsize=8)
-    ax.set(xlabel="mean |acceleration| along the orbit [m/s$^2$]", title="Force budget at 550 km",
+    ax.set(xlabel="mean |acceleration| along the orbit [m/s$^2$]", ylabel="force", title="Force budget at 550 km",
            xlim=(min(means) / 5, max(means) * 50))
 
 
@@ -219,7 +219,8 @@ def _draw_divergence_horizons(ax, t, divergence):
         ax.bar(np.arange(len(HORIZONS_DAYS)) + (k - (len(names) - 1) / 2) * width, values, width,
                color="black" if name == "All combined" else FORCE_COLORS[name], label=name)
     ax.set(xticks=range(len(HORIZONS_DAYS)), xticklabels=[f"{h} d" for h in HORIZONS_DAYS], yscale="log",
-           ylabel="average |r - r_baseline| [km]", title="Average effect of each force, by horizon")
+           xlabel="horizon [days]", ylabel="average |r - r_baseline| [km]",
+           title="Average effect of each force, by horizon")
     ax.legend(ncol=3, fontsize=7)
 
 

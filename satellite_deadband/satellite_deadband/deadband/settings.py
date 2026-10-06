@@ -2,9 +2,13 @@
 The settings chosen by the bias-variance tuning stage (deadband/tuning.py, main.py stage "tuning"),
 read by every later step so the optimal values are carried forward automatically.
 
-    tuned("fd_order")           finite-difference stencil order for the position regressions (steps 2-4)
+    tuned("fd_order")           finite-difference stencil order for 1-min data (steps 2-4)
+    fd_order_for(step_min)      the stencil order tuned for the sampling step nearest to step_min
+                                (the best order depends on the step: truncation error grows as h^order)
     tuned("sg_window")          Savitzky-Golay window (samples) of the classifier derivatives (steps 6-9)
     tuned("sg_order")           Savitzky-Golay polynomial order
+    tuned("sg_window_stacked")  Savitzky-Golay window / order for step 8, which averages many burns
+    tuned("sg_order_stacked")
     tuned("derivative_method")  how the classifier differentiates the velocity data (walk-forward winner)
     tuned("gmm_components")     number of Gaussians in the burn GMMs
     tuned("sma_window")         Savitzky-Golay window of the mean-SMA derivative (step 9)
@@ -20,7 +24,7 @@ from pathlib import Path
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
 SETTINGS_FILE = CACHE_DIR / "tuned_settings_v1.json"
 
-DEFAULTS = dict(fd_order=6, sg_window=21, sg_order=5, derivative_method="Savitzky-Golay", gmm_components=4,
+DEFAULTS = dict(fd_order=6, fd_order_by_step={}, sg_window=21, sg_order=5, sg_window_stacked=21, sg_order_stacked=5, derivative_method="Savitzky-Golay", gmm_components=4,
                 sma_window=41, stlsq_threshold=0.05)
 
 
@@ -35,6 +39,16 @@ def _load():
 def tuned(name):
     """The chosen value of one setting (the default if tuning has not run yet)."""
     return _load()[name]
+
+
+def fd_order_for(step_min):
+    """Tuned stencil order for this sampling step [min]: the choice made at the nearest studied step (log scale)."""
+    by_step = {float(k): v for k, v in tuned("fd_order_by_step").items()}
+    if not by_step:
+        return tuned("fd_order")
+    import math
+    nearest = min(by_step, key=lambda s: abs(math.log(s) - math.log(max(step_min, 1e-6))))
+    return int(by_step[nearest])
 
 
 def all_settings():

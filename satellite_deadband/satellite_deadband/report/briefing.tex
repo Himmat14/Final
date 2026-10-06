@@ -1,0 +1,923 @@
+% =====================================================================================================
+%  Briefing report: Manoeuvre Pattern-of-Life Prediction for SDA -- everything this project has done
+%  Compile:  pdflatex briefing.tex  (twice, for the contents and cross-references)
+%  Figures are read from ../outputs/report/ (produced by `python main.py`). A missing figure is replaced
+%  by a boxed note, so the document always compiles. On Overleaf, upload this file and the folder
+%  outputs/report/ keeping the same relative layout (or change \graphicspath below).
+% =====================================================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{booktabs,tabularx,longtable}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\graphicspath{{../outputs/report/}}
+\setlength{\parskip}{4pt}
+\setlength{\emergencystretch}{3em}   % lets lines with long code names break cleanly
+\setlist{itemsep=2pt,topsep=3pt}
+
+% ---- helpers -----------------------------------------------------------------------------------------
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\figfile}[4]{% #1 file  #2 width  #3 caption  #4 label
+  \begin{figure}[H]\centering
+  \IfFileExists{../outputs/report/#1}{\includegraphics[width=#2\textwidth]{#1}}%
+    {\fbox{\parbox{0.8\textwidth}{\centering\small Figure \code{#1} not found -- run \code{python main.py} first.}}}
+  \caption{#3}\label{#4}\end{figure}}
+\newsavebox{\briefbox}
+\newenvironment{keybox}[1]%
+  {\par\medskip\noindent\begin{lrbox}{\briefbox}\begin{minipage}{0.96\textwidth}\textbf{#1}\par\smallskip}%
+  {\end{minipage}\end{lrbox}\fcolorbox{blue!40!black}{blue!4}{\usebox{\briefbox}}\par\medskip}
+\newenvironment{whybox}%
+  {\par\smallskip\noindent\begin{lrbox}{\briefbox}\begin{minipage}{0.96\textwidth}\textbf{Why this way?}\enspace}%
+  {\end{minipage}\end{lrbox}\fcolorbox{orange!60!black}{orange!5}{\usebox{\briefbox}}\par\smallskip}
+
+\title{\textbf{Manoeuvre Pattern-of-Life Prediction for Space Domain Awareness}\\[4pt]
+\large A sequential briefing on every model, method and result of the project}
+\author{UROP project (Imperial College London) --- briefing compiled from the code and its outputs}
+\date{\today}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+\noindent This document explains, in the order in which the work was done, how a Starlink-like satellite
+that keeps its orbit inside a 500\,m semi-major-axis (SMA) deadband was simulated, how its manoeuvres were
+detected from noisy tracking data, how the control law behind them was learned, and how that law was
+used to forecast future manoeuvres. It summarises the physics (two-body gravity, the $J_2$ oblateness
+term, atmospheric drag, lunar and solar third-body attraction, solar radiation pressure), the controller
+(a smooth \emph{tanh} deadband with memory), the estimation methods (finite-difference regression, the
+energy method, shooting, Kalman filtering, spectral analysis), the classification methods (Gaussian
+mixture models and alternatives, scored per burn \emph{event}), the learning of the control law (SINDy and
+a Bayesian variant) and nine extension studies aimed at the UK Space Agency brief (space weather,
+realistic tracking passes, conjunction screening, sensor tasking, multiple control laws, fleets,
+calibrated intervals, GEO and a library ``zoo'' for SINDy). Every number quoted comes from the latest run
+of \code{python main.py} (\code{outputs/results.json}).
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================================================
+\section{The brief and the question}
+% =====================================================================================================
+The UK Space Agency brief ``Manoeuvre Pattern of Life Prediction for SDA'' starts from a simple
+observation: of the $\sim$50\,000 tracked objects about 15\,000 are active and may manoeuvre, and by 2035
+mega-constellations will push this beyond 50\,000. Unpredicted manoeuvres break three core Space Domain
+Awareness (SDA) functions:
+\begin{enumerate}
+  \item \textbf{close-approach (conjunction) screening}, which relies on predicted trajectories being
+        accurate over the screening window --- in the brief's Figure~1 a Starlink satellite keeping its SMA
+        inside a 500\,m deadband changes its miss distance by \emph{hundreds of km in a week};
+  \item \textbf{track association}, because a manoeuvre makes the predicted position wrong, so new
+        observations cannot be linked to the right catalogue object;
+  \item \textbf{sensor scheduling}, because the uncertainty of an unpredicted manoeuvre has to be shrunk
+        by tasking extra observations.
+\end{enumerate}
+Methods to detect \emph{past} manoeuvres exist; the gap the brief identifies is predicting \emph{future}
+manoeuvre patterns by \textbf{reconstructing the analytical control law from time series of measurements}.
+
+\begin{keybox}{The project in one sentence}
+Simulate a station-keeping satellite with realistic physics, then show --- step by step and with honest
+error bars --- that its burns can be detected from noisy data, that the control law behind them (``burn
+when the mean SMA reaches the lower edge, stop at the upper edge'') can be learned, and that the learned
+law forecasts future burns well enough to help screening, association and tasking.
+\end{keybox}
+
+\subsection{How the work progressed}
+\begin{description}
+  \item[Weeks 2--4] Basic simulation (gravity + drag + $J_2$), an \emph{impulsive} deadband controller,
+        inverse fitting of the drag coefficient, an FFT test for the $J_2$ signature, simple burn detectors
+        (threshold, CUSUM, $k$-means, GMM), a held-out comparison and a neural-network extrapolation test.
+  \item[Week 5] A \emph{smooth} controller (tanh switches, a 7th state for the thruster, the mean SMA
+        including the $J_2$ potential), burn detection in ``$\ddot r$ / $\dot v$ space'' with a GMM, and
+        event-level scoring.
+  \item[Report steps 1--9] A complete, documented pipeline on 400-day simulations: dynamics, regression,
+        drag and noise, spectra and Kalman filtering, deadband control, classification, robustness,
+        repetition (stacking and Gaussian processes) and SINDy/BINDy control-law learning with forecasts.
+  \item[Step 0 and audits] Bias--variance tuning of every adjustable setting, walk-forward /
+        walk-backward choice of the derivative method, a common figure style, and an audit of all figures.
+  \item[Steps 10--18] Extensions towards the brief, using a fast mean-element model calibrated on the
+        full simulation.
+  \item[Step 19] Learning the thrust law and the natural dynamics together or apart, compared with the
+        true model, and learning the natural law with no deadband.
+\end{description}
+All the old workstream stages were later re-written to use the \emph{same} 400-day data as the report, so
+every figure in \code{outputs/report/} comes from one consistent data set.
+
+% =====================================================================================================
+\section{Units, reference orbit and numerical integration}
+% =====================================================================================================
+\subsection{Non-dimensional units}
+The simulation is non-dimensional: the length unit is the Earth radius and the time unit is the inverse
+Earth spin rate,
+\begin{equation}
+  \mathrm{DU} = 6371\ \text{km},\qquad \mathrm{TU} = 1/\omega_\oplus = 13\,713.44\ \text{s},\qquad
+  \mu = \mu_\oplus\,\mathrm{TU}^2/\mathrm{DU}^3 = 289.873 .
+\end{equation}
+Working in these units keeps all state components of order one, which helps the ODE solvers and the
+least-squares fits (Section~\ref{sec:regression} shows why badly scaled columns matter).
+
+\subsection{Reference orbit}
+A Starlink-like circular orbit at 550\,km altitude (SMA $\approx 6922$\,km), inclination $53^\circ$, period
+$T\approx 95.5$\,min. The station-keeping band is $[6921.9,\,6922.4]$\,km in \emph{mean} SMA (500\,m wide),
+the same as Figure~1 of the brief.
+
+\subsection{Integrators}
+The uncontrolled runs use \code{DOP853} (8th-order Runge--Kutta) with relative and absolute tolerance
+$10^{-12}$ (non-dimensional). The controlled runs use \code{LSODA}, which switches automatically between a
+non-stiff Adams method and a stiff BDF method: the tanh switches of the controller make the equations stiff
+for a few seconds around every burn edge and non-stiff in between. A solver cross-check in step~1 confirms
+that different integrators agree.
+
+% =====================================================================================================
+\section{The dynamical model (report step 1)}\label{sec:dynamics}
+% =====================================================================================================
+\subsection{Equations of motion}
+The state is $\mathbf{x} = (\mathbf{r},\mathbf{v})$ (plus the thruster state $s$ for the controlled
+runs). The acceleration is the sum of the forces:
+\begin{equation}
+  \dot{\mathbf r} = \mathbf v,\qquad
+  \dot{\mathbf v} = \underbrace{-\frac{\mu\,\mathbf r}{r^3}}_{\text{two-body}}
+   + \mathbf a_{J_2} + \mathbf a_{\text{drag}} + \mathbf a_{\text{Moon}} + \mathbf a_{\text{Sun}} + \mathbf a_{\text{SRP}}
+   + \mathbf a_{\text{thrust}} .
+\end{equation}
+
+\paragraph{Earth oblateness ($J_2$).} The dominant perturbation at 550\,km comes from the equatorial
+bulge. With $R_e$ the \textbf{equatorial} radius (6378.137\,km) and $J_2 = 1.08263\times10^{-3}$,
+\begin{equation}
+  \mathbf a_{J_2} = \frac{3}{2}\frac{J_2\,\mu R_e^2}{r^4}
+  \begin{pmatrix} \tfrac{x}{r}\left(5\tfrac{z^2}{r^2}-1\right)\\[2pt]
+                  \tfrac{y}{r}\left(5\tfrac{z^2}{r^2}-1\right)\\[2pt]
+                  \tfrac{z}{r}\left(5\tfrac{z^2}{r^2}-3\right)\end{pmatrix},
+  \qquad
+  U_{J_2} = \frac{\mu J_2 R_e^2}{2 r^3}\left(3\sin^2\phi - 1\right),
+\end{equation}
+where $\phi$ is the latitude; $\mathbf a_{J_2} = -\nabla U_{J_2}$ (checked by a unit test).
+
+\begin{keybox}{A bug found and fixed: the $J_2$ reference radius}
+The code originally used the \emph{mean} Earth radius (6371\,km) in the $J_2$ term. $J_2$ is defined with
+the \emph{equatorial} radius, so the perturbation was $(6371/6378.137)^2 \approx 0.22\%$ too weak. This
+was fixed everywhere. The check (step~1): the theoretical nodal regression rate
+\begin{equation}
+  \dot\Omega = -\frac{3}{2}\,n\,J_2\left(\frac{R_e}{a}\right)^2\cos i
+\end{equation}
+integrated with the run's own (slowly drag-decaying) $a(t)$ agrees with the simulated right ascension of
+the ascending node to \textbf{0.04\%} after 400 days ($-4.526^\circ$/day at the start, $-4.642^\circ$/day at the
+end, the change being due to drag lowering the orbit).
+\end{keybox}
+
+\paragraph{Atmospheric drag.} With a constant (lumped) ballistic coefficient $c_d$,
+\begin{equation}
+  \mathbf a_{\text{drag}} = -c_d\,|\mathbf v|\,\mathbf v .
+\end{equation}
+Two values exist in the code: the Week~2--4 demonstration value \code{CD_TRUE} (about 45\,km/day of SMA
+decay, which would deorbit the satellite in $\sim$12 days) and the \emph{realistic} value \code{SMOOTH_CD}
+($\approx$0.13\,km/day, i.e.\ 5.3\,m/hour). Every 400-day run uses the realistic value. Steps~10--16 add a
+time-varying density (space weather).
+
+\paragraph{Third bodies (Moon, Sun).} The tidal (differential) attraction of a body at $\mathbf r_b$ with
+gravitational parameter $\mu_b$ is
+\begin{equation}
+  \mathbf a_b = \mu_b\left(\frac{\mathbf r_b-\mathbf r}{|\mathbf r_b-\mathbf r|^3} - \frac{\mathbf r_b}{|\mathbf r_b|^3}\right),
+\end{equation}
+the second term removing the attraction of the Earth itself (the origin is Earth-centred). Moon and Sun move
+on circular equatorial orbits (27.32 and 365.25 days).
+
+\paragraph{Solar radiation pressure (SRP).} A flat plate always facing the Sun, no eclipses:
+$|\mathbf a_{\text{SRP}}| = P\,C_R\,A/m$ with $P=4.56\,\mu$N/m$^2$, $C_R=1.3$, $A/m = 5/260$\,m$^2$/kg,
+directed away from the Sun.
+
+\subsection{The force budget}
+\figfile{step1_dynamics/step1_summary.png}{0.98}{Step 1 summary: orbit, ground tracks, the $J_2$ nodal
+regression check, the force budget, and how far each force moves the satellite over 15--360 days.}{fig:s1}
+At 550\,km the mean accelerations are: gravity 8.3\,m/s$^2$, $J_2$ $1.2\times10^{-2}$, Moon
+$8.8\times10^{-7}$, drag $8.1\times10^{-7}$, Sun $4.0\times10^{-7}$ and SRP $1.1\times10^{-7}$\,m/s$^2$.
+$J_2$ is four orders of magnitude above everything else, and the thruster (about $2\times10^{-4}$\,m/s$^2$)
+sits between $J_2$ and drag. Over a year the $J_2$-free orbit drifts by the orbit's diameter
+($\sim 10^4$\,km) relative to the true one, while the Moon, Sun and SRP each move it by 10--30\,km.
+
+\subsection{The 400-day data sets}
+All later steps read the same cached runs (\code{deadband/long_run.py}, about 500\,MB in \code{.cache/}):
+\begin{center}\small
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+Run & Content & Used by\\\midrule
+natural run & all forces, realistic drag, no thruster, 1-min samples & steps 1--4\\
+divergence runs & gravity + drag, plus each extra force on its own & step 1\\
+controlled run & smooth deadband controller, $J_2$ + drag, 6-s samples (102 burns) & steps 5--9\\
+drag-only run & the controlled orbit without a thruster & step 5\\
+\bottomrule
+\end{tabularx}
+\end{center}
+Steps 6--9 learn from days 0--40 (TRAIN) and are tested on days 40--400 (TEST); results are reported at
+horizons of 15, 30, 60, 120, 240 and 360 days.
+
+% =====================================================================================================
+\section{The station-keeping controller (report step 5)}\label{sec:controller}
+% =====================================================================================================
+\subsection{Why the Week 4 controller had to change}
+The Week~4 controller fired an \emph{impulsive} raise burn whenever the \emph{osculating} SMA fell below the
+lower edge, plus a trim burn. Two problems:
+\begin{enumerate}
+  \item \textbf{$J_2$ breaks the trigger.} The osculating SMA computed from the two-body energy
+        $a_{\text{osc}} = -\mu/(2\varepsilon)$, $\varepsilon = v^2/2 - \mu/r$, swings by about 12\,km per
+        orbit under $J_2$ (twice per orbit: high over the equator, low at the highest latitudes). A 500\,m
+        band is therefore crossed every orbit: a controller watching the osculating SMA fires constantly.
+  \item \textbf{``If'' statements are not ODEs.} An instantaneous impulse is a discontinuity that the
+        solver handles only with event detection, and it does not represent a real (finite-thrust) burn.
+\end{enumerate}
+
+\subsection{The mean SMA}
+Including the $J_2$ potential in the energy removes the swing:
+\begin{equation}
+  \varepsilon_{J_2} = \frac{v^2}{2} - \frac{\mu}{r} + U_{J_2}(\mathbf r),\qquad
+  a_{\text{mean}} = -\frac{\mu}{2\,\varepsilon_{J_2}} .
+\end{equation}
+Since $J_2$ is conservative, $\varepsilon_{J_2}$ is constant under $J_2$ and changes only through drag and
+thrust. To first order, $a_{\text{osc}} \approx a_{\text{mean}} - (J_2R_e^2/a)(3\sin^2\phi - 1)$: the swing
+is $+6.4$\,km over the equator and $-5.8$\,km at $53^\circ$ latitude. The simulated swing matches this to
+within 11\,m; the orbit-averaged osculating SMA sits a fixed $(J_2R_e^2/a)(1-\tfrac32\sin^2 i) = 275$\,m
+above $a_{\text{mean}}$ (a definition, not an error).
+
+\subsection{The smooth deadband law with memory}
+The state gains a 7th component, the thruster on/off state $s\in[0,1]$. With the smooth switch
+$\sigma(x) = \tfrac12\left(1+\tanh(x/w)\right)$ (width $w = 5$\,m of SMA),
+\begin{equation}
+  \tau\,\dot s = \underbrace{\sigma(a_L - a_{\text{mean}})(1-s)}_{\text{switch on below the lower edge}}
+              - \underbrace{\sigma(a_{\text{mean}} - a_U)\,s}_{\text{switch off above the upper edge}}
+              + \text{latch}(s),
+\end{equation}
+with a switch time $\tau=60$\,s and a weak latch term that pulls $s$ towards 0 or 1, so the state
+\emph{remembers} whether it is burning: between the edges both switches are off and $s$ stays where it is.
+This is a \textbf{hysteresis}: the same SMA (say mid-band) can be coasting or burning depending on the past,
+which no memory-less function $s = f(a)$ can represent (step~9 measures exactly this). The thrust is
+\begin{equation}
+  \mathbf a_{\text{thrust}} = T\,\theta(s)\,\hat{\mathbf v},\qquad
+  \theta(s) = \sigma\!\left(\frac{s - 0.9}{0.02}\right),\qquad T = 2\times10^{-4}\ \text{m/s}^2 ,
+\end{equation}
+so the throttle opens only once $s$ is past 0.9 (a Hall-effect-class thruster, $\sim$50\,mN on $\sim$250\,kg).
+
+\figfile{step5_deadband/step5_summary.png}{0.98}{Step 5 summary: the reproduction of the brief's Figure 1
+(mean SMA, controlled vs drag-only, and the miss distance), 400 days of station keeping, burns and fuel by
+horizon, the hysteresis loop, the thruster ramp for several switch times, and fuel vs band width.}{fig:s5}
+
+\subsection{Results over 400 days}
+\begin{itemize}
+  \item 102 burns, one every \textbf{3.905 days}, each \textbf{22.8\,min} long, $\Delta v = 0.273$\,m/s per burn
+        (27.8\,m/s in total, 25.2\,m/s over 360 days).
+  \item The mean SMA stays in $[6921.904,\,6922.402]$\,km for the whole run.
+  \item The distance between the controlled orbit and its drag-only twin reaches 1800\,km after 15 days and
+        saturates near the orbit diameter, because the two satellites drift to different phases of the
+        same orbit (the brief's ``hundreds of km in a week'').
+  \item Fuel hardly depends on the band width (3.8--4.2\,m/s over 60 days for 250--1000\,m bands): the fuel
+        replaces what drag removes; a narrower band only means more, smaller burns.
+\end{itemize}
+
+% =====================================================================================================
+\section{Step 0: bias--variance tuning of every setting}\label{sec:tuning}
+% =====================================================================================================
+Many methods below have a free setting (a stencil order, a smoothing window, a number of mixture
+components, a sparsity threshold). Instead of picking them by hand, step~0 chooses each from data and
+saves the choice in \code{.cache/tuned_settings_v1.json}; every later step reads it with
+\code{settings.tuned(...)}, so the optimum is carried forward automatically.
+
+\subsection{The decomposition}
+Repeat an estimate $\hat y$ of a true value $y$ over many independent noise draws (Monte-Carlo seeds or
+bootstrap re-fits):
+\begin{equation}
+  \underbrace{\mathbb E\big[(\hat y - y)^2\big]}_{\text{MSE}}
+  = \underbrace{\big(\mathbb E[\hat y]-y\big)^2}_{\text{bias}^2}
+  + \underbrace{\mathbb E\big[(\hat y-\mathbb E[\hat y])^2\big]}_{\text{variance}} .
+\end{equation}
+More flexible / less smoothed settings lower the bias and raise the variance; the best setting minimises
+the MSE. For time series the decomposition is done sample by sample and averaged.
+
+\subsection{The studies and what they chose}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{llp{3.4cm}X}
+\toprule
+Setting & Default & Tuned & How\\\midrule
+FD stencil order & 6 & per step: 1\,min$\to$4, 2\,min$\to$2, 5 and 10\,min$\to$6 & MSE of $c_d$ from 10\,m-noise positions at each sampling step\\
+Savitzky--Golay window / order & 21 / 5 & 61 / 5 & MSE of the classifier's $\dot v$ (coast and burn weighted equally)\\
+stacking window (step 8) & 21 / 5 & 41 / 5 & $\text{bias}^2 + (\text{noise})^2\,\text{variance}/N$: averaging $N$ burns removes variance, not bias\\
+derivative method & SG & SG & walk-forward / walk-backward event F1 (below)\\
+GMM components $K$ & 4 & 4 & bias$^2$ + variance of $P(\text{burn}\mid x)$ (Brier score), one-standard-error rule\\
+SMA derivative window & 41 & 41 & MSE of the learned coast and burn \emph{rates}\\
+STLSQ threshold & 0.05 & 0.05 & MSE of the SINDy law's predicted $\dot a$ on TEST (sparsest within 1\%)\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{whybox}
+A single global stencil order was first chosen on 1-minute data; the figure audit then showed that the
+10-minute Kalman comparison of step~4 had silently inherited it and become 10\% wrong. Truncation error
+grows like $h^{p}$ while noise amplification falls with $h$, so the best order depends on the step $h$ ---
+hence an order \emph{per sampling step}. The same logic gave step~8 its own (shorter) window: when 92 burns
+are averaged the variance falls by 92 but the bias does not.
+\end{whybox}
+
+\subsection{Choosing the derivative by walk-forward and walk-backward testing}
+For each way of differentiating the velocity data (Savitzky--Golay, central differences of order
+2/4/6/8), a GMM is trained on a 40-day window and tested out of sample over the following (\emph{forward}:
+train days 0--40) or preceding (\emph{backward}: train days 360--400) 15, 30, 60, 120, 240 and 360 days,
+at 0.25, 0.5 and 1$\times$ the reference noise. At the reference noise only Savitzky--Golay keeps an event
+F1 of 1.0 in all 12 periods (0 false events, 27\,s burn-start error); the central differences fail from
+0.5$\times$ noise (8th order already at 0.25$\times$) because they amplify noise.
+
+\figfile{step0_tuning/tuning_summary.png}{0.98}{Step 0 summary: bias$^2$, variance and MSE for each
+setting, and the walk-forward / walk-backward winner.}{fig:s0}
+
+% =====================================================================================================
+\section{Step 2: learning the coefficients by regression}\label{sec:regression}
+% =====================================================================================================
+\subsection{Finite differences}
+From positions $\mathbf r_k$ sampled every $h$, central differences of order $p$ give the velocity and
+acceleration, e.g.\ for $p=2$:
+\begin{equation}
+  \dot{\mathbf r}_k \approx \frac{\mathbf r_{k+1}-\mathbf r_{k-1}}{2h},\qquad
+  \ddot{\mathbf r}_k \approx \frac{\mathbf r_{k+1}-2\mathbf r_k+\mathbf r_{k-1}}{h^2},
+\end{equation}
+and wider stencils for $p=4,6,8$. The truncation error is $O(h^p)$; white position noise $\sigma$ becomes an
+acceleration error of order $\sigma/h^2$ (amplified by the stencil weights). This is the central
+bias--variance trade-off of the whole project.
+
+\subsection{Linear least squares}
+Each unknown multiplies a known ``shape'', so one linear solve recovers it:
+\begin{align}
+  \ddot{\mathbf r} &= \mu\,\Big(-\frac{\mathbf r}{r^3}\Big) &&\Rightarrow\ \hat\mu = (\Theta^\top\Theta)^{-1}\Theta^\top\ddot{\mathbf r},\\
+  \ddot{\mathbf r} + \frac{\mu\mathbf r}{r^3} - \mathbf a_{J_2} &= c_d\,\big(-|\mathbf v|\mathbf v\big),\\
+  \ddot{\mathbf r} + \frac{\mu\mathbf r}{r^3} &= [c_d,\ J_2,\ \mu_{\text{Moon}},\ \mu_{\text{Sun}},\ PC_RA/m]\cdot[\text{shapes}] .
+\end{align}
+The columns differ by up to 10 orders of magnitude (the Sun term is tiny), so they are scaled to unit length
+before solving and the scaling is undone afterwards (same answer, no round-off trouble).
+
+\figfile{step2_regression/step2_summary.png}{0.98}{Step 2 summary: $\mu$ vs sampling step (the Nyquist
+limit $T/2 = 47.75$\,min), finite-difference error vs step and order, the correlation of the joint-fit
+columns, and the joint fit vs data length (clean 1-min, 10\,m noise, clean 5-min).}{fig:s2}
+
+\paragraph{Results.} On clean 1-min data the joint fit recovers $c_d$ and $J_2$ to $\sim$0.002\%. The Moon
+($\sim$5\%) and especially the Sun (10--80\%) are poorly identifiable: their tidal shapes are small and
+correlated with each other and with $J_2$ (column correlations 0.18--0.25). With 10\,m noise the errors
+fall with data length (e.g.\ $c_d$ from 11\% at 15 days to 0.27\% at 360 days). On 5-minute data the
+truncation error swamps the small terms (Moon and Sun 200--700\% off).
+
+% =====================================================================================================
+\section{Step 3: drag estimation and noise robustness}
+% =====================================================================================================
+\subsection{Three ways to get $c_d$}
+\begin{enumerate}
+  \item \textbf{FD regression} (above): two derivatives of noisy positions.
+  \item \textbf{The energy method}: one derivative only. The mean SMA from the $J_2$ energy decays at
+        \begin{equation}
+          \dot a = -\frac{2a^2}{\mu}\,c_d\,|\mathbf v|^3 ,
+        \end{equation}
+        so $c_d$ follows from the \emph{slope} of a straight line fitted through the whole SMA history:
+        $\hat c_d = -\dot a\,\mu/(2\bar a^2\,\overline{|v|^3})$. Fitting a line averages the noise of every sample.
+  \item \textbf{Shooting}: propagate the orbit with trial parameters and fit the whole trajectory to the
+        observed positions by Levenberg--Marquardt (started from the energy-method answer, because the cost
+        is rugged far from the minimum).
+\end{enumerate}
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+noise (15 days, 1-min) & 0\,m & 1\,m & 5\,m & 10\,m & 50\,m & 100\,m\\\midrule
+FD regression $c_d$ error [\%] & 0.009 & 0.64 & 3.2 & 6.3 & 32 & 64\\
+energy method $c_d$ error [\%] & 0.006 & 0.008 & 0.015 & 0.035 & 0.18 & 0.35\\
+\bottomrule
+\end{tabular}
+\end{center}
+With 10\,m noise the energy method improves from 0.03\% (15 days) to 0.001\% (360 days); shooting gives
+0.05\% / 0.04\% at 15 / 30 days at a much higher cost.
+
+\figfile{step3_drag_noise/step3_summary.png}{0.98}{Step 3 summary: noise study, $c_d$ vs data length, the
+energy method's SMA trend, sensitivity maps (sampling step $\times$ noise) and the shooting cost landscape.}{fig:s3}
+
+\subsection{Step 3b: realistic (coloured) noise}
+Real tracking errors are not white. The realistic mixture combines white noise at four rates (every sample
+and held for 10/100/1000 samples), pink ($1/f$) noise, a random walk ($1/f^2$) and once-per-orbit and
+once-per-day sinusoids, scaled to the \emph{same RMS} as the white case so that only the spectrum differs.
+Second derivatives multiply the noise spectrum by $f^4$ (fast noise hurts, slow noise is filtered); the
+energy method fits a slow trend, so slow noise (drifts, random walk) can mimic drag decay. At 1\,m RMS over
+30 days the realistic noise makes the energy-method $c_d$ 4.2$\times$ worse, SRP 4.0$\times$ and the Sun
+2.3$\times$ worse, while FD $c_d$ and $J_2$ are almost unchanged.
+
+\subsection{Workstream E: whole-trajectory cost surface}
+The shooting fit of $(c_d, J_2)$ on 3 days of 10-min data has a cost surface (\code{inverse_cost_surface_3d})
+with a narrow valley at the true $c_d$ running along $J_2$; the joint fit at 100\,m noise recovers $c_d$ to
+0.006\% and $J_2$ to 0.0014\%, with a 27\,m RMS floor that is model error (the observed orbit also feels
+the Moon, Sun and SRP, which the fitted model omits).
+
+% =====================================================================================================
+\section{Step 4: spectra, filtering and Kalman filtering}
+% =====================================================================================================
+\subsection{The periodogram and the $J_2$ signature}
+The radial unmodelled acceleration (finite-difference acceleration minus point-mass gravity and drag) is
+Fourier-transformed with a Hann window. $J_2$ depends on $\sin^2\phi$, so it appears at \textbf{twice the
+orbital frequency}. The signal-to-noise ratio is the peak power within $\pm1\%$ of 2 cycles/orbit divided
+by the median background power below 6 cycles/orbit (a fine sampling step must not be penalised by
+high-frequency finite-difference noise far above the band of interest).
+\begin{itemize}
+  \item SNR falls with noise (15 days, 5-min: 47\,dB at 0.1\,km, 27\,dB at 1\,km, 12\,dB at 5\,km).
+  \item SNR collapses once the sampling step exceeds the $J_2$ Nyquist limit $T/4 \approx 23.9$\,min
+        (55\,dB at 1\,min, $-3$\,dB at 90\,min, step~4c).
+  \item A longer record gives finer frequency resolution, but over months drag slowly shifts the line,
+        so SNR peaks at $\sim$60 days.
+\end{itemize}
+
+\subsection{Filtering}
+A band-pass around 2 cycles/orbit isolates $J_2$ and a low-pass below 0.3 cycles/orbit isolates drag. For
+\emph{estimating} a force with a known shape, filtering does not beat least squares, which already is the
+matched filter.
+
+\subsection{The extended Kalman filter (EKF)}
+The state $\mathbf x = (\mathbf r,\mathbf v, c_d)$ is propagated with the full gravity + $J_2$ + drag
+model and its state-transition matrix $\Phi$ ($\dot\Phi = F\Phi$, $F$ the Jacobian); each noisy position
+updates it:
+\begin{align}
+  \text{predict:}\quad & \mathbf x^- = f(\mathbf x),\quad P^- = \Phi P\Phi^\top + Q,\\
+  \text{update:}\quad & K = P^-H^\top(HP^-H^\top+R)^{-1},\quad \mathbf x = \mathbf x^- + K(\mathbf z - H\mathbf x^-),\quad P = (I-KH)P^- .
+\end{align}
+With 10-min data and 10\,m noise the EKF finds $c_d$ to 0.04\% after 15 days and 0.01\% after 30 days,
+better than the energy method (1.2\%) and FD regression (0.5--21\%) on the same coarse data.
+
+\figfile{step4_spectral_kalman/step4_summary.png}{0.98}{Step 4 summary: where each force lives in frequency,
+$J_2$ SNR vs data length and sampling step, band-pass and low-pass filtering, and the Kalman filter against
+the other $c_d$ methods.}{fig:s4}
+
+\subsection{Step 4b: ``force spectroscopy''}
+Inspired by infrared spectroscopy, each force is identified by its \emph{diagnostic band} (a band where it
+holds $\ge$90\% of the power) and its strength read from the band area relative to a reference library.
+Parseval's theorem ($\sum|X_k|^2 \propto \overline{a^2}$) explains a key result: spectral \emph{power}
+shares do not match the force budget (they square the amplitudes, so $J_2$'s 99.98\% becomes 99.999999\%);
+the \emph{square root} of the power does (RMS $\approx$ mean $|a|$). Band reading is 30--40$\times$
+faster than regression; it recovers drag to 0.5\%, $J_2$ to 2\% and SRP to 0.9\% in random mixtures, the
+Moon to 8\%, while the Sun is not separable (its lines lie under the Moon's). A phase-aware fit is exact but
+needs the force model evaluated along the orbit, like regression.
+
+% =====================================================================================================
+\section{Step 6: classifying coast and burn}\label{sec:classify}
+% =====================================================================================================
+\subsection{The feature: the unmodelled acceleration}
+From measured $\mathbf r$, $\mathbf v$ (6-s samples with reference noise 0.1\,m and 0.5\,mm/s), the
+unmodelled acceleration is the derivative minus the known physics:
+\begin{equation}
+  \mathbf a_u = \dot{\mathbf v}_{\text{measured}} - \Big(-\frac{\mu\mathbf r}{r^3} + \mathbf a_{J_2}\Big)
+  \approx \mathbf a_{\text{drag}} + \mathbf a_{\text{thrust}} .
+\end{equation}
+While coasting $|\mathbf a_u|\sim 10^{-6}$\,m/s$^2$ (drag); during a burn $\sim 2\times10^{-4}$. Two features
+are used: $x_1 = \log|\mathbf a_u|$ (how big) and $x_2 = \mathbf a_u\cdot\hat{\mathbf v}/10^{-4}$ (thrust
+pushes \emph{forwards}, noise does not). Velocity-based ($\dot v$) features are used rather than
+position-based ($\ddot r$) ones because a second derivative of noisy positions is pure noise.
+
+\begin{whybox}
+Why the derivative method matters: with the 2nd-order stencil at 6\,s the coast residual is the
+stencil's own truncation error ($\sim6\times10^{-5}$\,m/s$^2$), only 4$\times$ below the thrust, so the GMM's
+burn Gaussian was not centred on the burns. Higher-order stencils bring the floor to the real drag
+($8\times10^{-7}$) on clean data; with noise only the Savitzky--Golay filter (a least-squares polynomial
+through a window) works. The tuned window is 61 samples (6\,min).
+\end{whybox}
+
+\subsection{The Gaussian mixture model}
+A GMM models the feature density as $p(\mathbf x) = \sum_{k=1}^{K}\pi_k\,\mathcal N(\mathbf x;\bm\mu_k,\Sigma_k)$,
+fitted by expectation--maximisation on TRAIN. The posterior (``weight'') of a sample is
+$P(k\mid\mathbf x) = \pi_k\mathcal N_k/\sum_j\pi_j\mathcal N_j$. With $K=4$ (tuned): one or two Gaussians for
+the coast, one for the burn plateau and a spare for the thruster ramps; a component is labelled \emph{burn}
+if its mean $\log|a_u|$ lies more than 3 coast standard deviations above the coast mean (thrust only adds
+acceleration). Alternatives: a Bayesian GMM (Dirichlet prior switches off unused components), $k$-means,
+Isolation Forest and a MAD threshold.
+
+\subsection{From samples to events}
+A 23-min burn is $\sim$230 samples. Flags are grouped into \textbf{events}: gaps of $\le2$ samples are
+filled and runs shorter than 10 samples (1\,min) are dropped. Scoring is per event: a true burn is found if a
+detected event overlaps it within $\pm60$\,s; precision = real events / detected events, recall = burns found
+/ burns, F1 their harmonic mean.
+
+\subsection{Results}
+On 92 TEST burns over 360 days: GMM, Bayesian GMM and the MAD threshold score F1 = 1.0 on noisy data (all
+92 burns, 0 false events), $k$-means fails completely with noise (136\,662 false events), Isolation Forest
+0.85. The scores hold at every horizon from 15 to 360 days.
+
+\subsection{Stress test: how coarse can the sampling get?}
+At 0--4$\times$ the reference noise and steps from 6\,s to 60\,min:
+\begin{itemize}
+  \item the Savitzky--Golay derivative works up to a \textbf{2-min} step (beyond, a polynomial through 5
+        samples spanning a large arc of the curved orbit has a truncation error bigger than the thrust);
+  \item a new \textbf{one-step-propagation} feature --- propagate each measured state one step with gravity
+        + $J_2$ (RK4) and divide the velocity mismatch at the next measurement by the step --- works from
+        $\sim$1\,min up to \textbf{20\,min} at every noise level, since its noise shrinks as $1/h$;
+  \item switching between the two at about 2\,min gives F1 $\ge$ 0.9 from 6\,s to 20\,min at all noise levels;
+        beyond one burn length (23\,min) the burn is diluted into one interval.
+\end{itemize}
+
+\figfile{step6_classification/step6_summary.png}{0.98}{Step 6 summary: dataset split, $\ddot r$ vs $\dot v$
+noise floors, the feature space with the GMM, the stress test, event F1 vs horizon, event scores, timing
+errors and the working ranges of the sampling step.}{fig:s6}
+\figfile{step6_classification/gmm_phase_space_3d.png}{0.7}{The phase space (mean SMA, its rate, along-track
+acceleration) over two TEST cycles, every sample coloured by its GMM weight $P(\text{burn}\mid x)$.}{fig:phase}
+
+% =====================================================================================================
+\section{Step 7: robustness of the classifiers}
+% =====================================================================================================
+Days 0--40 train, the next 60 days test. GMM, Bayesian GMM and threshold keep F1 = 1.0 from 0.25 to
+8$\times$ the reference noise; $k$-means fails as soon as there is noise (its two clusters split the
+coast cloud); Isolation Forest stays near 0.8--0.9. The GMM needs $\sim$1000 training samples. The
+number of components hardly matters between 2 and 6 at these noise levels. The workstream \code{detection}
+stage adds five basic detectors (rolling z-score, MAD threshold, $k$-means, GMM, CUSUM) on the same data:
+CUSUM is the most noise-tolerant online detector.
+
+% =====================================================================================================
+\section{Step 8: repetition --- autocorrelation, stacking and a Gaussian process}
+% =====================================================================================================
+\begin{itemize}
+  \item The \textbf{autocorrelation} of the noisy along-track acceleration peaks at 3.9051 days, matching the
+        true burn period (3.9051 days).
+  \item \textbf{Stacking}: aligning the 92 detected burns and averaging them reduces noise; the error of the
+        average falls until it hits a floor set by the smoothing of the edges (the tuned stacking window
+        trades this bias against the $1/\sqrt N$ variance).
+  \item A \textbf{Gaussian process} (RBF + white-noise kernel) through the stacked samples gives a thrust law:
+        level $2.00\times10^{-4}$\,m/s$^2$ (0.999 of the truth), duration 1368\,s (exact), rise time 60\,s
+        (truth 30\,s: the derivative smooths the edge).
+  \item With only 15 days (4 burns) the level is already within 0.3\%, the period exact to $10^{-4}$.
+\end{itemize}
+\figfile{step8_repetition_gp/step8_summary.png}{0.98}{Step 8 summary.}{fig:s8}
+
+% =====================================================================================================
+\section{Step 9: learning the control law (SINDy and BINDy) and forecasting}\label{sec:sindy}
+% =====================================================================================================
+\subsection{Sparse identification of nonlinear dynamics (SINDy)}
+SINDy writes the rate of a state as a sparse combination of candidate functions (a ``library''):
+\begin{equation}
+  \dot a = \Theta(a,s)\,\bm\xi,\qquad \Theta = [\,\theta_1(a,s),\ \theta_2(a,s),\ \dots\,],
+\end{equation}
+and finds a sparse $\bm\xi$ by \textbf{sequentially thresholded least squares} (STLSQ): solve least squares,
+set coefficients below a threshold to zero, refit on the remaining terms, repeat.
+
+\paragraph{Why a cluster-indicator library.} The obvious physics library $[D(a), B(a), 1]$ with
+$D = \tfrac{2a^2}{\mu}|v|^3$ (drag shape) and $B = \tfrac{2a^2}{\mu}|v|$ (thrust shape) is singular: over a
+500\,m band both are constant to a few ppm and perfectly correlated (correlation 0.997). The library
+therefore uses the thruster state from the classifier: $[1-s,\ s,\ a-a_{\text{ref}},\ s(a-a_{\text{ref}}),\
+(a-a_{\text{ref}})^2]$. STLSQ keeps only the two cluster terms; drag and thrust follow from them:
+$\hat c_d = 1.0005\,c_d$ and $\hat T = 0.9997\,T$.
+
+\paragraph{BINDy (Bayesian).} Automatic relevance determination (ARD) regression gives a posterior mean and
+standard deviation for each coefficient, i.e.\ credible intervals for the physics.
+
+\subsection{The switching law}
+The burn start and end SMAs give the learned edges 6921.9037 / 6922.4013\,km. A memory-less sigmoid
+$s = f(a)$ reaches only 0.50 balanced accuracy (chance); the hysteresis with the learned edges reaches
+1.00. \textbf{The controller has memory, and the learned law must too.}
+
+\subsection{Forecasting}
+The learned hybrid model --- $\dot a$ from SINDy, switching by the learned hysteresis --- is integrated
+forward from day 40 with no further data. Mean onset error over the 360-day forecast: periodic baseline
+0.9\,min, GP coast curve 18\,min, BINDy ensemble 34\,min, SINDy 195\,min, random forest 286\,min.
+
+\begin{whybox}
+Why does SINDy drift and why does the periodic baseline win here? A coast rate learned from 40 days of
+noisy $\dot a$ carries a few hundred ppm of error; each 3.9-day coast is then a little too short, and the
+error accumulates linearly over 92 cycles. The periodic baseline learns the period directly, which is
+perfect \emph{only because drag is constant in this simulation}. Step~10 removes this assumption and the
+ranking reverses.
+\end{whybox}
+\figfile{step9_sindy_control_law/step9_summary.png}{0.98}{Step 9 summary.}{fig:s9}
+
+% =====================================================================================================
+\section{The workstream stages, aligned with the report data}
+% =====================================================================================================
+The Week~2--5 stages were rewritten to use the report's data, split, features and event scoring, and
+gained 3D views:
+\begin{description}
+  \item[\code{neural_net}] an MLP fitted as SMA$=f(t)$ on days 0--40 flattens outside its training window
+        (44\,km off after 360 days) whereas a straight line is 0.09\,km off: a time-indexed network
+        cannot extrapolate physics.
+  \item[\code{inverse}] the 3D cost surface over $(c_d, J_2)$ (above).
+  \item[\code{spectral}] the $J_2$ SNR surface over sampling step $\times$ noise and a waterfall of the
+        spectrum against record length.
+  \item[\code{smooth_deadband}, \code{deadband}] Figure~1, the switches, the $J_2$ mean-vs-osculating figure, the
+        400-day sawtooth and a 3D hysteresis loop.
+  \item[\code{derivative_gmm}] the GMM in $\ddot r$/$\dot v$ space, five derivative methods, the Week~4
+        features on the same samples, and a cadence sweep.
+  \item[\code{gmm}] the GMM density and burn-probability surfaces in 3D, the phase space coloured by GMM
+        weight, and GMM vs $k$-means decision regions.
+  \item[\code{heldout}] seven detectors on held-out days 40--100, including a Gaussian-process anomaly
+        detector that models the coast SMA as a function of the time since the SMA left the upper edge
+        (trained on GMM labels, not truth): GMM, Bayesian GMM, DBSCAN and the GP reach F1 = 1.0,
+        Isolation Forest 0.71, $k$-means and Ward clustering 0.
+\end{description}
+
+% =====================================================================================================
+\section{Extensions towards the brief (steps 10--18)}
+% =====================================================================================================
+\subsection{The mean-element model}
+A full 6-s integration of 400 days takes about 20 minutes; the extensions need hundreds of scenarios. They
+use the model the controller itself follows:
+\begin{equation}
+  \dot a = -k\,w(t)\,e^{-(a-a_{\text{ref}})/H} + T\,s,\qquad s:\ 0\to1 \text{ at } a\le a_L,\ 1\to0 \text{ at } a\ge a_U ,
+\end{equation}
+with $k$ the coast decay rate (5.335\,m/h), $T$ the thrust contribution (1308\,m/h), $H=60$\,km the
+density scale height and $w(t)$ the space-weather density factor. $k$, $T$ and the \emph{effective} edges
+(the tanh switch starts each burn $\sim$6\,m above the nominal lower edge) are calibrated on the full run;
+the model reproduces the burn period to 0.01\% and the burn length to 1\%. The effective band is the SMA span covered by a coast (coast rate $\times$ coast duration), about 3\,m wider than the SMA difference between the throttle half-way points because of the thrust ramps.
+
+\subsection{Step 10: space-weather drag}
+$w(t)$ combines a 27-day solar-rotation wave, a slow solar-cycle trend and 8 geomagnetic storms (density
+$\times$2--4, 1.5-day decay); an observable daily proxy (an F10.7/Ap-like index) has 5\% noise. Forecasters:
+periodic baseline; the law with constant drag; with the latest coast rate; with $k\times$proxy and a 27-day
+persistence forecast of the proxy; and with a perfect space-weather forecast (upper bound). Forecasts are
+event-driven: with $G(t)=\int k\,\hat w\,dt$ a coast from $a_0$ ends where $G(t)-G(t_0)=a_0-a_L$.
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+mean $|$onset error$|$ [min] & const., 15\,d & const., 360\,d & space weather, 15\,d & space weather, 120\,d\\\midrule
+periodic baseline & 2 & 3 & 1642 & 1732\\
+law, constant drag & 68 & 630 & 1418 & 1670\\
+law + space-weather proxy & 68 & 630 & 730 & 1286\\
+law + perfect forecast & 68 & 630 & 164 & 419\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{Variable drag changes the interval between burns but not the band edges}: the periodic baseline then
+loses its phase, while the learned law tracks it as well as drag can be forecast.
+\figfile{step10_space_weather/step10_summary.png}{0.98}{Step 10 summary.}{fig:s10}
+
+\subsection{Step 11: realistic tracking passes}
+Instead of 6-s states, 8-minute passes of 12-s positions (10\,m--1\,km noise), 1--8 per day. Each pass is
+fitted by batched Gauss--Newton orbit determination (6 state parameters, RK4 gravity + $J_2$, finite-difference
+Jacobian); one pass gives the SMA to about 2$\times$ the position noise. Burns are found in the gaps:
+the SMA jump minus the drag decay (estimated from pass pairs a day apart) must exceed a threshold set by
+the pass noise. Pass-to-pass: F1 $\approx$1 at 10\,m noise for 1--8 passes/day; at 100\,m only a multi-pass
+test (mean of all passes a day before vs after) finds some burns (F1 0.47 at 8/day); at $\ge$300\,m the
+500\,m burn is buried. A CCSDS OEM reader runs the same analysis on real ephemerides placed in
+\code{data/ephemeris/}.
+
+\subsection{Step 12: close-approach screening}
+An SMA error $\delta a$ changes the mean motion by $\delta n = -\tfrac32 (n/a)\,\delta a$, so the along-track
+error grows as
+\begin{equation}
+  \delta s(t) = -\tfrac32\,n\int_0^t \big(a_{\text{pred}}-a_{\text{true}}\big)\,dt ;
+\end{equation}
+an unknown 500\,m burn makes the catalogue drift by $\tfrac32 n\times0.5$\,km $\approx$ 3\,km/hour. RMS
+along-track error at 1 / 7 days: drag-only 19 / 396\,km, periodic 18 / 42\,km, learned law with
+space weather 5.8 / 11.9\,km, perfect forecast 2.0 / 4.1\,km. Screening with $P_c \approx \pi R^2\,
+\mathcal N(\text{miss};0,\Sigma)$ ($R = 20$\,m, alert at $10^{-4}$): with an honest covariance even the best
+method misses 25\% of dangerous conjunctions at 1 day (drag-only 68\%), because the errors are still km-sized
+--- the ``dilution'' that the brief warns makes screening ineffective. With today's catalogue-only covariance
+nearly all dangerous conjunctions are missed.
+
+\subsection{Step 13: sensor tasking and track association}
+Six observation opportunities a day, a budget of 1, 2 or 4. With an association gate of 20\,km, custody is
+lost after 74\% of burns with one random observation a day, 48\% if the observation is scheduled just after
+each \emph{predicted} burn, and 15--19\% if the catalogue also carries the predicted burn (its error is then only
+$\tfrac32 n\,\delta a\times$ timing error). With 4 observations a day the losses are 20\% and 4\%.
+
+\subsection{Step 14: several control laws on one satellite}
+Orbit raising from 6890\,km, the 500\,m deadband, a 3\,km band change at day 150 and six 3-min collision-avoidance
+burns. From noisy SMA (5\,m, 10-min samples) every burn is detected and labelled from duration, SMA gain and
+start SMA relative to a running edge: \textbf{105/105 correct} by rules and also by an unsupervised GMM; the
+band change is found as a changepoint at day 150.0; each regime gets its own rate law.
+
+\subsection{Step 15: a fleet of 40 satellites}
+Forty satellites share the space weather but differ in band ($\pm$5\,km), drag ($\times$0.7--1.3) and thrust
+($\pm$10\%). Three pattern-of-life changes are planted (band up 1\,km at day 200, thrust halved at day 250,
+band narrowed to 200\,m at day 300). Rolling 30-day laws are compared with each satellite's own history,
+with the coast rate divided by the fleet median (removing the common space weather): exactly the three
+changed satellites are flagged, 10--20 days after each change, with no false flags. Empirical-Bayes pooling of
+the drag coefficient, $\hat k_i^{\text{pool}} = (\tau^2\hat k_i + s_i^2\bar k)/(\tau^2+s_i^2)$, reduces the
+error from 21.6\% to 12.5\% with 4 days and from 11.8\% to 6.8\% with 8 days of data per satellite
+(with only 2 days the single-arc variance has to be guessed and pooling overshoots).
+
+\subsection{Step 16: calibrated (conformal) burn-time intervals}
+Split conformal prediction: the absolute onset errors of forecasts from calibration origins (days 40--200)
+give, per lead-time bucket, the $\lceil (n+1)(1-\alpha)\rceil/n$ quantile $q$; the interval is $\pm q$.
+On new origins (days 200--360) the 90\% intervals of the space-weather forecaster cover 93--99\% of the burns.
+
+\subsection{Step 17: GEO station keeping}
+The GEO longitude obeys $\ddot\lambda = -A\sin 2(\lambda-\lambda_s)$ (Earth's triaxiality, $A=0.0017^\circ$/day$^2$,
+$\lambda_s = 75.07^\circ$E); the inclination grows by 0.85$^\circ$/year. East-west (impulsive, $\pm0.05^\circ$ box),
+north-south (impulsive) and an electric-propulsion east-west law (continuous low thrust with a deadband on
+position and drift rate) are simulated. SINDy recovers $A = 0.00171$ and $\lambda_s = 74.98^\circ$ from a
+free-drift phase; inside the box only the local acceleration is identifiable. Impulses are detected from
+6-hourly longitudes as drift-rate jumps between 8-day quadratic fits, and the east-west burns are forecast
+0.1--1.3 days off up to 225 days ahead from the learned local acceleration and box edges.
+
+\subsection{Step 18: the SINDy equation zoo}
+Ten candidate libraries per dataset --- constant per cluster, polynomial, exponential density, time
+polynomial, Fourier in time, space-weather proxy, proxy $\times$ density, a deliberately wrong library without
+a cluster indicator and a ``kitchen sink''; for GEO polynomials and Fourier harmonics in $\lambda$:
+\begin{itemize}
+  \item on the full-physics data every richer library is pruned back to the same two-term law
+        (the data support nothing more);
+  \item with space weather only the proxy libraries forecast well (about 260 vs $\sim$1640\,min);
+  \item for GEO the true $\sin2\lambda,\cos2\lambda$ form (with or without a constant) forecasts best;
+  \item ``kitchen-sink'' libraries diverge through collinearity; BIC alone can prefer an over-fitted library
+        that forecasts worse, so free-running forecasts are the decisive test;
+  \item \textbf{thresholding}: classic STLSQ drops terms small \emph{relative to the largest} coefficient,
+        which deletes the real coast drag next to the 250$\times$ larger, rare burn term; a significance
+        threshold ($|\xi|\ge 3$ standard errors) keeps it but lets spurious terms through on very large,
+        correlated data sets. Both are reported side by side.
+\end{itemize}
+\figfile{step18_sindy_zoo/step18_summary.png}{0.98}{Step 18 summary.}{fig:s18}
+
+% =====================================================================================================
+\section{Step 19: thrust law and natural dynamics, learned together or apart}\label{sec:split}
+% =====================================================================================================
+\subsection{Why split the problem?}
+Step~9 learned everything at once. But the mean-SMA dynamics are the sum of two physically different parts,
+\begin{equation}
+  \dot a \;=\; \underbrace{-\,c_d\,D(a,|\mathbf v|)}_{\text{natural (coasting) dynamics}}
+         \;+\; \underbrace{T\,\theta(t)\,B(a,|\mathbf v|)}_{\text{thrust control law}},\qquad
+  D = \frac{2a^2}{\mu}|\mathbf v|^3,\quad B = \frac{2a^2}{\mu}|\mathbf v|,
+\end{equation}
+plus the switching law that decides $\theta$ (on at the lower edge, off at the upper edge). In
+operations one part is often better known than the other: the natural dynamics come from a catalogue
+force model, while the operator's thruster and control law are unknown --- or, for one's own satellite,
+the thrust is known and the drag is not. Step~19 measures what each kind of prior knowledge is worth.
+
+\subsection{The four scenarios}
+All use step~9's data (the 400-day controlled run, reference noise, smoothed derivative $\dot a$,
+burn flags from the GMM), learn on days 0--40 and are scored on days 40--400 against the \emph{true}
+model ($c_d$, $T$, the true throttle profile and the true effective edges). Each is fitted by least
+squares (SINDy point estimate) and by ARD regression (BINDy posterior standard deviation).
+\begin{description}
+  \item[A. Whole system] one regression of $\dot a$ on $[-D,\ sB]$ over \emph{all} samples, with $s$ the
+        detected burn flags; edges from the detected burns. Everything learned at once, as it comes.
+  \item[B. Thrust law only (natural known)] $c_d$ is given: $\dot a + c_dD = T\,sB$ gives $T$; edges learned.
+  \item[C. Natural law only (thrust known)] $T$, the throttle profile and the edges are given:
+        $\dot a - T\theta B = -c_dD$ over all samples (burns included) gives $c_d$.
+  \item[D. Both, learned separately] $c_d$ from the clean \emph{coast} arcs only, then $T$ from the clean
+        \emph{burn} arcs given that $c_d$.
+\end{description}
+The forecast integrates the hysteresis law forward from the end of the last training burn with the
+learned rates (shapes averaged over the training coast and burn samples, i.e.\ with the measured, not
+circular, speeds) and compares the predicted burn onsets with the true ones over 360 days.
+
+\subsection{Results}
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+scenario & $c_d$/true (BINDy $\pm1\sigma$) & $T$/true & period [d] & onset error at 360\,d\\\midrule
+A whole system & 0.9922 ($\pm$1.4\%) & 0.924 & 3.9351 & 1668 min\\
+B thrust only (natural known) & given & 0.924 & 3.9047 & 26 min\\
+C natural only (thrust known) & 1.0015 ($\pm$1.0\%) & given & 3.9006 & 302 min\\
+D both, separately & 1.0006 ($\pm$0.6\%) & 0.9995 & 3.9011 & 262 min\\
+\midrule
+truth & 1 & 1 & 3.9051 & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+  \item \textbf{The joint regression is biased.} The GMM's burn flags are slightly wider than the
+        thrust (they include the ramps, and the smoothed derivative spreads the burn edge over the
+        filter window), so in scenario A some samples with partial thrust are labelled ``burn'' and
+        some with thrust are labelled ``coast''. Least squares then lowers $T$ by 7.6\% and absorbs part
+        of the edge leakage into the drag ($-0.8\%$). Splitting the problem onto clean arcs (D) removes
+        both biases: $c_d$ to 0.06\%, $T$ to 0.05\%.
+  \item \textbf{The forecast is governed by the natural law.} A coast is 99.6\% of each 3.9-day cycle,
+        so a 0.1\% drag error shifts every burn by about 5 minutes and accumulates linearly. With the
+        natural law known (B) the forecast stays within 26 minutes over a year, even though its $T$ is
+        7.6\% low (that only lengthens each 23-minute burn by about 2 minutes). With the thrust known (C)
+        the drag is learned to 0.15\% and the forecast is far better than A but worse than B.
+  \item \textbf{Rate errors.} Predicted $\dot a$ on coasting samples is within 0.001--0.04\,m/hour of
+        the truth for all scenarios; over all samples the error (about 20\,m/hour) is dominated by the
+        few samples at the burn edges where the detected flags and the true throttle disagree --- except
+        in C, which uses the true throttle (0.008\,m/hour).
+\end{itemize}
+\begin{keybox}{What prior knowledge is worth}
+For forecasting a station-keeping satellite, knowing the \emph{natural} dynamics (a good drag model)
+is worth far more than knowing its thruster: the thrust level hardly matters, the coast rate decides
+when the next burn comes. When nothing is known, learn the two laws \emph{separately} on clean arcs
+rather than in one regression.
+\end{keybox}
+\figfile{step19_sindy_split/step19_summary.png}{0.98}{Step 19: (a) physics recovered per scenario with
+BINDy intervals, (b) free-running forecast error, (c) one burn as seen by each scenario, (d) the free
+decay without a deadband, (e) the learned decay laws, (f) their SMA forecasts.}{fig:s19}
+
+\subsection{The natural law with no deadband}
+Without the controller the satellite decays freely: 51\,km in 400 days for both the drag-only run
+($J_2$ + drag) and the natural run (plus Moon, Sun and SRP). With constant density the true law is
+\begin{equation}
+  \dot a = -c_d\,\frac{2a^2}{\mu}|\mathbf v|^3 = -2\,c_d\sqrt{\mu\,a}\qquad\text{(circular orbit)} .
+\end{equation}
+Eight libraries were fitted on days 0--40 (one SMA sample per minute, reference noise, 1-hour smoothing
+derivative) and tested on days 40--400:
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+library & test RMS of $\dot a$ [m/h] & SMA error after 360 d & recovered $c_d$\\\midrule
+constant / linear / quadratic$^{*}$ & 0.012 & 84 m & ---\\
+$\sqrt{a}$ (true form) & 0.0006 & 1 m & 1.0001\\
+physics shape $D(a)$ (true form) & 0.0006 & 1 m & 1.0001\\
+exponential density $e^{-(a-a_0)/H}$ & 3.55 & 51 km & ---\\
+power laws $a^{-1}, a^{1/2}, a^2$ & 0.14 & 0.9 km & ---\\
+kitchen sink & 0.14 & 0.9 km & ---\\
+\bottomrule
+\end{tabular}\\[2pt]
+{\footnotesize $^{*}$ STLSQ prunes the linear and quadratic terms, leaving a constant rate.}
+\end{center}
+\begin{itemize}
+  \item The \textbf{true form} recovers $c_d$ to 0.01\% from 40 days and forecasts the SMA a year ahead to
+        1\,m (also with the Moon, Sun and SRP present: their effect on the mean SMA is periodic).
+  \item A \textbf{constant} rate is almost as good over 40 days but misses the 0.4\% change of the rate over
+        the 51\,km descent: 84\,m after a year. STLSQ correctly prunes the linear and quadratic terms ---
+        over 40 days they cannot be distinguished from noise.
+  \item The \textbf{exponential-density} library encodes physics that is \emph{not} in this simulator
+        (density rising as the orbit falls; here density is constant): it fits the training data but its
+        extrapolation is 51\,km off --- a physically plausible library is not automatically the right
+        one, and free-running forecasts, not training fit, decide.
+  \item Collinear \textbf{power-law} and kitchen-sink libraries split the rate between near-identical
+        columns and extrapolate to 0.9\,km error.
+\end{itemize}
+In the real atmosphere the density \emph{does} rise as the orbit decays (and varies with space weather,
+step~10), so on real data the exponential library would be expected to win; the method, not the winner,
+is the transferable result.
+
+% =====================================================================================================
+\section{Validation, figure audit and honest limitations}
+% =====================================================================================================
+\subsection{Testing}
+41 unit tests (\code{python -m unittest discover tests}) cover the physics ($J_2 = -\nabla U_{J_2}$), the
+controller, finite differences, the bias--variance identity, the mean-element calibration, forecasting with
+perfect knowledge, conformal coverage, $P_c$ against Monte Carlo, pass orbit determination, the OEM reader,
+regimes, fleet change detection, GEO law recovery and the SINDy zoo.
+
+\subsection{Problems found and fixed during the audits}
+\begin{itemize}
+  \item the $J_2$ reference radius (0.22\% too weak);
+  \item a $J_2$ check that ignored the drag-driven change of $a$ (1.4\% apparent error);
+  \item a GMM burn component not centred on the burns (2nd-order derivative truncation error);
+  \item a single tuned stencil order applied to 10-min data (10\% $c_d$ error, now per step);
+  \item an over-smoothed stacked burn in step~8 (now its own tuned window);
+  \item burn edges biased by partially-thrusting samples (now from coast/burn line intersections);
+  \item a GP detector that used true labels (now GMM labels);
+  \item integrators overshooting the band edges (now stopped on the edge).
+\end{itemize}
+
+\subsection{Limitations}
+\begin{itemize}
+  \item The inputs of steps 1--9 are full state vectors at 6\,s with 0.1\,m / 0.5\,mm/s noise --- far better
+        than real tracking (step~11 shows how quickly detection degrades with realistic passes).
+  \item Constant drag in steps 1--9 makes the periodic baseline look unbeatable; step~10 corrects this
+        with modelled, not real, space weather.
+  \item Steps 10--16 use the mean-element model (burn period within 0.01\% of the full run), not full orbit integration.
+  \item No real ephemerides were downloaded (a space-track account is needed); optical angles-only orbit
+        determination is not implemented.
+  \item The per-step stencil order was tuned for $c_d$ under noise; at the 2-min step it picked order 2, which
+        is worse for $\mu$ on clean data (step~2a) --- tuning is objective-specific.
+  \item Moon, Sun and SRP strengths are only weakly identifiable from short or coarse records.
+\end{itemize}
+
+% =====================================================================================================
+\section{How well the project answers the brief}
+% =====================================================================================================
+\begin{center}\small
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Brief requirement & Status\\\midrule
+Figure 1 & reproduced (step 5) \\
+Detect past manoeuvres & 92/92 burns, 0 false events over 360 days at reference noise; down to 10\,m-noise tracking passes\\
+Reconstruct the control law & edges to $\sim$0.3\,m, drag and thrust to $<$0.05\%, thrust profile, memory (hysteresis), multiple regimes, GEO law\\
+Predict future manoeuvres & yes; beats a periodic baseline once drag varies, with calibrated intervals\\
+Screening / association / tasking & demonstrated quantitatively (steps 12--13) in a simplified setting\\
+Real data, realistic noise & partly: tracking passes and an OEM reader; no real ephemerides yet\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\appendix
+\section{Running the code}
+\begin{verbatim}
+python main.py                    # all 31 stages -> outputs/ (~30 min)
+python main.py --list             # the stages, in run order
+python main.py --stages step6 gmm # only some stages
+python main.py --retune           # redo the step 0 bias-variance studies
+python -m unittest discover tests # 41 tests
+\end{verbatim}
+Library code is in \code{deadband/} (no plotting); each stage in \code{stages/} draws figures into
+\code{outputs/report/stepN_*/} and returns numbers for \code{outputs/results.json}. Every module starts with
+a plain-English docstring explaining its method.
+
+\section{Glossary}
+\begin{description}[style=nextline]
+  \item[SMA] semi-major axis; \emph{osculating} from the two-body energy, \emph{mean} including the $J_2$ potential.
+  \item[Deadband] the allowed SMA band; the controller burns only at its edges.
+  \item[Hysteresis] dependence of the state on its history (the controller's memory).
+  \item[GMM] Gaussian mixture model; EM = expectation--maximisation.
+  \item[Event F1] harmonic mean of event precision and recall.
+  \item[SINDy / STLSQ] sparse identification of nonlinear dynamics / sequentially thresholded least squares.
+  \item[BINDy / ARD] the Bayesian variant / automatic relevance determination.
+  \item[EKF] extended Kalman filter; STM = state-transition matrix.
+  \item[TCA, $P_c$] time of closest approach, collision probability.
+  \item[Conformal prediction] distribution-free intervals calibrated on held-out errors.
+  \item[OEM] CCSDS orbit ephemeris message (ephemeris file format).
+\end{description}
+
+\end{document}

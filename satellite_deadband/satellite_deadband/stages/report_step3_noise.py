@@ -157,7 +157,8 @@ def _draw_ratio(ax, errors):
         for xi, value in zip(x + (k - 0.5) * 0.38, ratios):
             ax.text(xi, value * 1.15, f"{value:.2g}", ha="center", fontsize=7)
     ax.axhline(1, color="black", lw=1)
-    ax.set(yscale="log", xticks=x, xticklabels=PARAMETERS, ylabel="realistic error / white error",
+    ax.set(yscale="log", xticks=x, xticklabels=PARAMETERS, xlabel="estimated parameter",
+           ylabel="realistic error / white error",
            title=f"Same RMS ({RATIO_NOISE_M:g} m), different spectrum: >1 = realistic noise is worse")
     ax.tick_params(axis="x", labelsize=8)
     ax.legend()

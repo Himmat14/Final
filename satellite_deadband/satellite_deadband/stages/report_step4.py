@@ -232,7 +232,7 @@ def _draw_kalman_comparison(ax, rows):
     for k, (key, color, name) in enumerate((("fd", RUST, "FD regression"), ("energy", NAVY, "energy method"),
                                             ("ekf", GREEN, "Kalman filter"))):
         ax.bar(x + (k - 1) * 0.27, [max(row[key], 1e-6) for row in rows], 0.27, color=color, label=name)
-    ax.set(xticks=x, xticklabels=labels, yscale="log", ylabel="cd error [%]", title="cd after 15 and 30 days of data")
+    ax.set(xticks=x, xticklabels=labels, yscale="log", xlabel="method, data length", ylabel="cd error [%]", title="cd after 15 and 30 days of data")
     ax.legend()
 
 

@@ -50,7 +50,7 @@ def _draw_fd(ax, rows, chosen, step_min=1):
 def _draw_fd_steps(ax, rows):
     """MSE vs order for every noise level and sampling step: the optimum moves."""
     for noise, color in zip(tuning.FD_NOISES_KM, (GREEN, AMBER, RUST)):
-        for step, style in zip(tuning.FD_STEPS_MIN, ("o-", "s--", "^:")):
+        for step, style in zip(tuning.FD_STEPS_MIN, ("o-", "s--", "^:", "D-.")):
             mine = [r for r in rows if r["step_min"] == step and r["noise_km"] == noise]
             ax.plot([r["order"] for r in mine], [max(r["mse"], 1e-8) for r in mine], style, color=color,
                     label=f"{noise * 1000:g} m noise, {step}-min data")
@@ -89,10 +89,10 @@ def _draw_walk(axes, rows, best):
                 f1 = np.array([r["f1"] for r in mine]) + (i - 2) * 0.012     # tiny offset: overlapping lines stay visible
                 ax.semilogx([r["horizon_days"] for r in mine], f1, "os^Dv"[i], ls=tuning_styles[i], color=color,
                             lw=2.6 if method == best else 1.4, label=method + (" (chosen)" if method == best else ""))
-            what = ("trained on days 0-40, tested on the NEXT h days" if direction == "forward"
-                    else "trained on days 360-400, tested on the h days BEFORE day 360")
+            what = ("train days 0-40, test the next h days" if direction == "forward"
+                    else "train days 360-400, test the h days before")
             ax.set(xticks=HORIZONS_DAYS, ylim=(-0.08, 1.08), xlabel="out-of-sample horizon h [days]",
-                   ylabel="event F1", title=f"Walk-{direction}, {scale:g} x reference noise: {what}")
+                   ylabel="event F1", title=f"Walk-{direction}, {scale:g} x noise ({what})")
             ax.set_xticklabels([str(h) for h in HORIZONS_DAYS])
             ax.minorticks_off()
     axes[0][0].legend(fontsize=7, loc="center left")
@@ -105,12 +105,13 @@ def _draw_walk_table(ax, summary, best):
            color=[GREEN if m == best else GREY for m in methods])
     for i, m in enumerate(methods):
         start = summary[m]["start_error_s"]
-        start_text = f"{start:.0f} s" if np.isfinite(start) else "no burns found"
-        ax.text(i, 0.04, f"false events {summary[m]['false_events']}\nstart error {start_text}",
+        text = (f"false events {summary[m]['false_events']}\nstart error {start:.0f} s" if np.isfinite(start)
+                else "no burns\nfound")
+        ax.text(i, 0.04, text,
                 ha="center", fontsize=7, color="white" if summary[m]["mean_f1"] > 0.2 else SLATE)
     ax.set_xticks(x)
     ax.set_xticklabels(methods, rotation=15, fontsize=8)
-    ax.set(ylim=(0, 1.1), ylabel="mean event F1 (12 out-of-sample periods, +-1 sd)",
+    ax.set(ylim=(0, 1.1), xlabel="derivative method", ylabel="mean event F1 (12 out-of-sample periods, +-1 sd)",
            title=f"Walk-forward / backward winner (reference noise): {best}")
 
 
@@ -138,8 +139,8 @@ def _draw_gmm(axes, rows, chosen):
 
 def _draw_sindy(axes, sma_rows, sma_window, stlsq_rows, threshold):
     _bias_variance(axes[0], [r["window_s"] for r in sma_rows], sma_rows, sma_window * 6.0,
-                   "mean-SMA derivative window [s]", "SINDy input da/dt (coast + burn weighted equally)",
-                   "error$^2$ [(m/hour)$^2$]")
+                   "mean-SMA derivative window [s]", "Learned coast and burn rates (what drives the forecast)",
+                   "relative rate error$^2$ [ppm$^2$]")
     axes[0].set_xscale("log")
     _bias_variance(axes[1], [r["threshold"] for r in stlsq_rows], stlsq_rows, threshold, "STLSQ threshold",
                    "SINDy law: predicted da/dt on TEST", "error$^2$ [(m/hour)$^2$]", log_x=True)
@@ -152,7 +153,9 @@ def _draw_sindy(axes, sma_rows, sma_window, stlsq_rows, threshold):
 def _draw_chosen(ax, chosen):
     ax.axis("off")
     lines = ["Settings carried forward to every later step", ""]
-    lines += [f"{name:<20} {settings.DEFAULTS[name]!s:>16}  ->  {value!s}" for name, value in chosen.items()]
+    lines += [f"{name:<20} {settings.DEFAULTS[name]!s:>16}  ->  {value!s}" for name, value in chosen.items()
+              if name != "fd_order_by_step"]
+    lines += ["fd_order per step:   " + ", ".join(f"{s} min -> {o}" for s, o in chosen["fd_order_by_step"].items())]
     lines += ["", "(left: the hand-picked default, right: the tuned value)"]
     ax.text(0, 1, "\n".join(lines), va="top", family="monospace", fontsize=9)
 

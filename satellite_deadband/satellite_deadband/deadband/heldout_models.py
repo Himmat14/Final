@@ -144,9 +144,10 @@ def time_since_upper_edge(t, sma_km):
     return elapsed
 
 
-def fit_gp_detector(dataset, sma_km, seed=0):
+def fit_gp_detector(dataset, sma_km, coast_labels, seed=0):
+    """coast_labels: 1 where the GMM says coast (NOT the truth: the GP must not see true labels)."""
     elapsed = time_since_upper_edge(dataset.t, sma_km)
-    rows = np.flatnonzero(dataset.train & (dataset.true_on == 0) & (elapsed > 0))   # NaN compares False
+    rows = np.flatnonzero(dataset.train & (coast_labels == 1) & (elapsed > 0))   # NaN compares False
     fit_rows = np.random.default_rng(seed).choice(rows, size=min(GP_POINTS, rows.size), replace=False)
     offset = sma_km[fit_rows].mean()
     kernel = ConstantKernel(1.0) * RBF(length_scale=20.0, length_scale_bounds=(1.0, 500.0)) + WhiteKernel(1e-6)
@@ -158,7 +159,7 @@ def fit_gp_detector(dataset, sma_km, seed=0):
         rows_k = known[start:start + GP_CHUNK]
         mean[rows_k] = model.predict(elapsed[rows_k, None]) + offset
     residual = sma_km - mean
-    coast_train = np.flatnonzero(dataset.train & (dataset.true_on == 0) & np.isfinite(mean))
+    coast_train = np.flatnonzero(dataset.train & (coast_labels == 1) & np.isfinite(mean))
     scatter = 1.4826 * np.median(np.abs(residual[coast_train] - np.median(residual[coast_train])))   # robust sd
     z = np.where(np.isfinite(mean), residual / scatter, 0.0)                                         # one-sided
     return GpDetection(elapsed_hours=elapsed, sma_km=sma_km, mean=mean, z_score=z,
@@ -212,7 +213,9 @@ def run_heldout_experiment():
 
     r, v = add_noise(dataset, 0.1, 0.5, seed=1)                    # same measured r, v as the features
     sma = mean_sma_km_series(np.vstack([r, v]))
-    gp = fit_gp_detector(dataset, sma)
+    gmm_train = np.zeros(len(X), dtype=int)                        # GMM labels on TRAIN pick the GP's coast samples
+    gmm_train[dataset.train] = predictors[GMM_NAME](X[dataset.train])
+    gp = fit_gp_detector(dataset, sma, coast_labels=1 - group_into_events(gmm_train))
     flags = np.zeros(len(X), dtype=int)
     flags[test] = gp.flags[test]
     events[GP_NAME] = group_into_events(flags)
