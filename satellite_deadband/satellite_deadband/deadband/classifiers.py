@@ -84,10 +84,14 @@ class DetectionDataset:
                                 self.thrust_ms2[::stride], self.mean_sma_km[::stride], self.step_s * stride)
 
 
-@lru_cache(maxsize=1)
-def detection_dataset():
-    """The 400-day controlled run (see long_run.py), as a DetectionDataset."""
-    run = controlled_run()
+SOURCES = ("j2_drag", "full")      # the J2 + drag run (steps 5-20) and the all-forces run (step 21)
+
+
+@lru_cache(maxsize=2)
+def detection_dataset(source="j2_drag"):
+    """The 400-day controlled run (see long_run.py), as a DetectionDataset. source="full" adds Moon, Sun, SRP."""
+    from .long_run import controlled_full_run
+    run = controlled_run() if source == "j2_drag" else controlled_full_run()
     return DetectionDataset(t=run.t, r=run.r, v=run.v, true_on=run.true_on, thrust_ms2=run.thrust_ms2,
                             mean_sma_km=run.mean_sma_km, step_s=SAMPLE_STEP_S)
 

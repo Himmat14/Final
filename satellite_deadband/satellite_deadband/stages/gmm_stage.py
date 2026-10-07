@@ -30,7 +30,9 @@ from deadband.gmm_2d import ellipse_points, mixture_density_grid, mixture_densit
 from deadband.long_run import TRAIN_DAYS
 from deadband.method_comparison import feature_grid, fit_regions_under_noise, region_labels
 from deadband.derivative_detection import runs_of_ones
-from .common import AMBER, GREY, NAVY, RUST, SLATE
+from matplotlib.colors import LinearSegmentedColormap
+
+from .common import AMBER, GREEN, GREY, NAVY, PURPLE, RUST, SKY_BLUE, SLATE
 from .report_common import report_style, save, step_dir
 
 NOISE_CASES = {0.0: "clean", 1.0: "noisy (0.1 m, 0.5 mm/s)"}
@@ -103,11 +105,14 @@ def _draw_phase_space(ax, fit):
     sma = dataset.mean_sma_km
     rate_m_per_hour = np.gradient(sma, SAMPLE_STEP_S / 3600) * 1000
     weight = fit["gmm"].burn_probability(X[keep])
-    points = ax.scatter(sma[keep], rate_m_per_hour[keep], X[keep, 1], c=weight, cmap="plasma", s=3, vmin=0, vmax=1)
+    order = np.argsort(weight)                                # burn samples drawn last (on top)
+    keep, weight = keep[order], weight[order]
+    points = ax.scatter(sma[keep], rate_m_per_hour[keep], X[keep, 1], c=weight, cmap=BURN_CMAP,
+                        s=np.where(weight > 0.5, 14, 3), vmin=0, vmax=1, depthshade=False)
     ax.ticklabel_format(axis="x", useOffset=False)
     _labels(ax, "mean SMA [km]", "d(mean SMA)/dt [m/hour]", "measured along-track accel [1e-4 m/s$^2$]")
     ax.set_title(f"Phase space, days {PHASE_DAYS[0]}-{PHASE_DAYS[1]} (TEST), coloured by the GMM weight P(burn):\n"
-                 "the coast line (dark) and the burn line (bright) are told apart sample by sample", fontsize=10)
+                 "the coast line (navy) and the burn line (vermilion) are told apart sample by sample", fontsize=10)
     ax.view_init(elev=20, azim=-60)
     return points
 
@@ -123,7 +128,7 @@ def _draw_orbit(ax, fit):
     earth = 6378.0
     ax.plot_wireframe(earth * np.cos(u) * np.sin(v), earth * np.sin(u) * np.sin(v), earth * np.cos(v), color=GREY,
                       lw=0.3, alpha=0.4)
-    points = ax.scatter(*r_km, c=weight, cmap="plasma", s=4, vmin=0, vmax=1)
+    points = ax.scatter(*r_km, c=weight, cmap=BURN_CMAP, s=4, vmin=0, vmax=1)
     ax.set_box_aspect((1, 1, 1))
     _labels(ax, "x [km]", "y [km]", "z [km]")
     ax.set_title(f"The orbit around the first TEST burn (day {to_days(start):.1f}), coloured by P(burn)", fontsize=10)
@@ -151,24 +156,45 @@ def _draw_scatter_3d(ax, fit):
 # ---------------------------------------------------------------------------
 # 2D figures
 # ---------------------------------------------------------------------------
-def _draw_contours(ax, fit, case):
-    dataset, X = fit["dataset"], fit["X"]
-    x_grid, y_grid, x_limits, y_limits = feature_grid(X, n=120)
-    _, _, density = mixture_density_grid(fit["gmm"].model, x_limits, y_limits, n=120)
-    ax.contourf(x_grid, y_grid, np.log10(density + 1e-12), levels=np.linspace(-8, np.log10(density.max()), 25),
-                cmap="viridis", alpha=0.6, extend="min")
+ELLIPSE_STYLES = ((NAVY, "-"), (GREEN, "--"), (PURPLE, "-."), (SLATE, ":"))
+BURN_CMAP = LinearSegmentedColormap.from_list("coast_to_burn", [NAVY, PURPLE, RUST])
+
+
+def _draw_contours(ax, fit, case, region="coast"):
+    """
+    Density contours (labelled, log10), 1- and 2-sigma ellipses and the TEST data, zoomed on one cluster:
+    the coast cloud and the burn cluster are ~4 decades apart, so one plot of both makes each tiny.
+    """
+    dataset, X, model, is_burn = fit["dataset"], fit["X"], fit["gmm"].model, fit["gmm"].is_burn
     test = np.flatnonzero(dataset.test)
-    coast, burn = test[dataset.true_on[test] == 0][::30], test[dataset.true_on[test] == 1]
-    ax.scatter(X[coast, 0], X[coast, 1], c=SLATE, s=2, alpha=0.4, label="coast (TEST, every 30th)")
-    ax.scatter(X[burn, 0], X[burn, 1], c=RUST, s=4, label="burn (TEST)")
-    model = fit["gmm"].model
+    coast, burn = test[dataset.true_on[test] == 0], test[dataset.true_on[test] == 1]
+    rows = burn if region == "burn" else coast
+    lo, hi = np.percentile(X[rows], (0.5, 99.5), axis=0)
+    pad = 0.25 * (hi - lo)
+    x_limits, y_limits = (lo[0] - pad[0], hi[0] + pad[0]), (lo[1] - pad[1], hi[1] + pad[1])
+    x_grid, y_grid, density = mixture_density_grid(model, x_limits, y_limits, n=220)
+    log_density = np.log10(density + 1e-300)
+    top = np.ceil(log_density.max())
+    levels = np.arange(top - 5, top + 0.01, 1.0)
+    ax.contourf(x_grid, y_grid, log_density, levels=np.append(levels, top + 1), cmap="Greys", alpha=0.35)
+    lines = ax.contour(x_grid, y_grid, log_density, levels=levels, colors=SLATE, linewidths=0.8)
+    ax.clabel(lines, fmt=lambda v: f"{v:.0f}", fontsize=8)
+    step = 40 if region == "coast" else 1
+    ax.scatter(X[coast[::step], 0], X[coast[::step], 1], c=SKY_BLUE, s=3, alpha=0.5, rasterized=True,
+               label="coast (TEST" + (", every 40th)" if step > 1 else ")"))
+    ax.scatter(X[burn, 0], X[burn, 1], c=AMBER, s=6, alpha=0.8, rasterized=True, label="burn (TEST)")
     for k in range(model.n_components):
-        ex, ey = ellipse_points(model.means_[k], model.covariances_[k], n_std=2.0)
-        kind = "burn" if fit["gmm"].is_burn[k] else "coast"
-        ax.plot(ex, ey, color=ELLIPSE_COLORS[k % 4], lw=1.8, label=f"component {k}: {kind}, w={model.weights_[k]:.3f}")
-    ax.set(xlim=x_limits, ylim=y_limits, xlabel="log |unmodelled accel from v'|", ylabel="along-track [1e-4 m/s$^2$]",
-           title=f"GMM density (log10), 2-sigma ellipses and TEST data, {case}")
-    ax.legend(fontsize=7, loc="upper left")
+        color, style = (RUST, "-") if is_burn[k] else ELLIPSE_STYLES[k % 4]
+        for n_std, lw in ((1.0, 2.0), (2.0, 1.0)):
+            ex, ey = ellipse_points(model.means_[k], model.covariances_[k], n_std=n_std)
+            ax.plot(ex, ey, color=color, ls=style, lw=lw,
+                    label=(f"component {k + 1} ({'burn' if is_burn[k] else 'coast'}, w = {model.weights_[k]:.3f})"
+                           if n_std == 1.0 else None))
+    ax.set(xlim=x_limits, ylim=y_limits, xlabel="x1 = log |unmodelled acceleration| [log m/s$^2$]",
+           ylabel="x2 = along-track acceleration [1e-4 m/s$^2$]",
+           title=f"GMM, {case}: {'coast cloud' if region == 'coast' else 'burn cluster'} "
+                 "(contours: log10 density; ellipses: 1 and 2 sigma)")
+    ax.legend(fontsize=7.5, loc="upper left", markerscale=2, framealpha=0.9)
 
 
 def _draw_regions(axes, fits):
@@ -242,10 +268,11 @@ def run(sim, out_dir):
             fig.colorbar(points, shrink=0.6, pad=0.1, label="GMM weight P(burn | x)")
             save(fig, folder, name)
 
-        fig, axes = plt.subplots(1, 2, figsize=(15, 5.5))
-        for ax, (scale, case) in zip(axes, NOISE_CASES.items()):
-            _draw_contours(ax, fits[scale], case)
-        save(fig, folder, "gmm_contour_ellipses.png")
+        for scale, case in NOISE_CASES.items():
+            fig, axes = plt.subplots(1, 2, figsize=(15, 5.8))
+            for ax, region in zip(axes, ("coast", "burn")):
+                _draw_contours(ax, fits[scale], case, region)
+            save(fig, folder, "gmm_contour_ellipses.png" if scale else "gmm_contour_ellipses_clean.png")
         fig, axes = plt.subplots(2, 2, figsize=(13, 10))
         shift = _draw_regions(axes, fits)
         save(fig, folder, "decision_regions_grid.png")

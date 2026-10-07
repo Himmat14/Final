@@ -35,8 +35,8 @@ SOLAR_ROTATION_DAYS = 27.0
 # ---------------------------------------------------------------------------
 # Calibration on the full 400-day controlled run
 # ---------------------------------------------------------------------------
-@lru_cache(maxsize=1)
-def calibrate():
+@lru_cache(maxsize=2)
+def calibrate(source="j2_drag"):
     """
     k [km/s], T [km/s], a_ref [km], band edges and burn period measured on the full controlled run:
     k = -median coast slope of the mean SMA, T = (SMA gained per burn) / (burn duration) + k.
@@ -44,7 +44,8 @@ def calibrate():
     from .derivative_detection import runs_of_ones
     from .long_run import controlled_run
     from .constants import TU
-    run = controlled_run()
+    from .long_run import controlled_full_run
+    run = controlled_run() if source == "j2_drag" else controlled_full_run()
     t_s = run.t * TU
     sma, on = run.mean_sma_km, run.true_on
     burns = runs_of_ones(t_s, on)

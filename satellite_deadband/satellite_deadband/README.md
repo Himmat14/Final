@@ -24,8 +24,9 @@ python main.py --stages step6 gmm --out my_results
 python -m unittest discover tests # quick sanity checks
 ```
 
-`main.py` runs 31 stages (step 0 tuning first, steps 1-18 with the workstream stages after their step) (the report steps 1-9 plus the workstream stages) and writes every figure
+`main.py` runs 34 stages (step 0 tuning first, steps 1-22 with the workstream stages after their step) and writes every figure
 into `outputs/report/stepN_*/` and every number into `outputs/results.json`. Nothing is hand-edited.
+Every multi-panel figure is also cut into its single panels (`outputs/report/stepN_*/panels/<name>_a.png`, ...), and `outputs/report/figure_index.json` lists each figure's panels with their titles and axis labels. The LaTeX report `report/briefing.tex` uses only single-panel figures.
 
 ## Step 0: bias-variance tuning (runs first, results carried forward)
 
@@ -85,6 +86,9 @@ scenarios run in about a second.
 | 17 | `step17_geo` | GEO east-west / north-south boxes, chemical and electric propulsion; SINDy recovers the triaxiality law (A 0.00171 vs 0.0017, lambda_s 74.98 vs 75.07 deg) from a free drift; impulses detected from 6-hourly longitudes; E/W burns forecast 0.1-1.3 days off over 230 days | `geo.py` |
 | 18 | `step18_sindy_zoo` | ten candidate libraries per dataset (full-physics LEO, space-weather LEO, GEO): only the proxy libraries forecast variable drag; extra terms are pruned on the full-physics data; collinear "kitchen sink" libraries diverge; relative vs significance STLSQ thresholds fail in opposite ways | `sindy_zoo.py` |
 | 19 | `step19_sindy_split` | thrust law vs natural dynamics learned together (A), thrust only with drag known (B), drag only with thrust known (C) or separately on clean arcs (D), against the true model: joint learning biases T by -7.6%; separate learning recovers c_d and T to <0.1%; knowing the drag gives a 26-min error after 360 days. No deadband: the sqrt(a) / physics-shape law recovers c_d to 0.01% and the SMA a year ahead to 1 m | `sindy_split.py` |
+| 20 | `step20_pipeline` | the whole chain end to end (measured r, v -> GMM -> mean SMA -> c_d, T, edges -> forecast): stage accuracy, an error budget swapping the truth into one stage at a time (all-true sanity check 1.4 min; the band edges dominate), the GMM components in detail, the chain re-run at 6 s to 10 min (F1 = 1 and c_d within 0.08% at every step; edges degrade from 5 min), GP thrust law vs step, space-weather forecast vs cadence, and 18 closed-form checks of the headline numbers. Every figure is a single panel | `pipeline.py`, `report_checks.py` |
+| 21 | `step21_deep_dive` | the subtraction against machine epsilon (numerical floor 1e-8 m/s^2, 80x below drag, set by the Savitzky-Golay truncation), the SG filter in the frequency domain, why (x1, x2) and the hat-box theorem, the log-chi (fat-left-tailed) coast and better mixtures (log-chi coast + Gaussian burn: better BIC than the K = 4 GMM with 10 instead of 23 parameters), BIC / AIC vs K, the sigmoidal thrust model vs the GP, the controller as a 2-state ODE with its hysteresis direction, the SMA sawtooth, and PCA frames for the coasting dynamics (sparse but linear: they drift by tens of km a day; the 3-term physics library stays within 0.65 km after 10 days) | `gmm_physics.py`, `deep_dive.py`, `pca_coast.py` |
+| 22 | `step22_full_forcing` | a second 400-day controlled run with every force (J2, drag, Moon, Sun, SRP): detection unchanged (F1 = 1); the third bodies modulate each coast, so the split-law forecast error at 360 d rises from 66 to 132 min (86 min when the analyst also models Moon / Sun / SRP) and even the periodic schedule drifts by 45 min. Also writes the onset-error tables at every horizon (outputs/report/tables/) | `full_forcing.py`, `report_tables.py` |
 
 Also fixed: the GP detector in the `heldout` stage now picks its training coast samples from the GMM's
 labels, not from the true labels.

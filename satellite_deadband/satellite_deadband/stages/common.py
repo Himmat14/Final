@@ -38,6 +38,7 @@ LINE_STYLES = ["-", "--", "-.", ":", (0, (5, 1, 1, 1, 1, 1)), (0, (8, 2)), (0, (
 # --- Fonts and sizes ---------------------------------------------------------
 FONT = "DejaVu Sans"
 TITLE_SIZE, LABEL_SIZE, TICK_SIZE, LEGEND_SIZE, SUPTITLE_SIZE = 10.5, 9.5, 8.5, 8, 13
+MIN_LEGEND_SIZE = 7.5
 
 STYLE = {
     "font.family": FONT,
@@ -104,7 +105,7 @@ def _style_axes(ax):
     legend = ax.get_legend()
     if legend is not None:
         for text in legend.get_texts():
-            text.set_fontsize(min(text.get_fontsize(), LEGEND_SIZE))
+            text.set_fontsize(max(min(text.get_fontsize(), LEGEND_SIZE), MIN_LEGEND_SIZE))   # never tiny
 
 
 def _check_labels(fig, filename):
@@ -153,4 +154,86 @@ def save_figure(fig, out_dir, filename, dpi=200, tight_rect=None, tight=True):
     else:
         fig.tight_layout()
     fig.savefig(Path(out_dir) / filename, dpi=dpi)
+    export_panels(fig, out_dir, filename, dpi)
+    _index_figure(fig, out_dir, filename)
     plt.close(fig)
+
+
+FIGURE_INDEX = {}        # "<step folder>/<file>" -> panels with their titles and axis labels (main.py saves it)
+
+
+def _index_figure(fig, out_dir, filename):
+    groups = _panel_groups(fig)
+    panels = []
+    for letter, group in zip("abcdefghijklmnopqrstuvwxyz", groups):
+        ax = group[0]
+        panels.append(dict(panel=letter if len(groups) > 1 else "", title=ax.get_title(), xlabel=ax.get_xlabel(),
+                           ylabel=" | ".join(a.get_ylabel() for a in group if a.get_ylabel())))
+    suptitle = fig._suptitle.get_text() if fig._suptitle is not None else ""
+    FIGURE_INDEX[f"{Path(out_dir).name}/{filename}"] = dict(suptitle=suptitle, panels=panels)
+
+
+def _panel_groups(fig):
+    """
+    The panels of a figure: each data axis together with its twin axes (same position) and the colour
+    bars right next to it. Returned in reading order (top row first, left to right) = the (a), (b) labels.
+    """
+    axes = [ax for ax in fig.axes if ax.get_label() != "<colorbar>"]
+    colorbars = [ax for ax in fig.axes if ax.get_label() == "<colorbar>"]
+    groups = []
+    for ax in axes:
+        box = ax.get_position()
+        for group in groups:
+            ref = group[0].get_position()
+            if abs(ref.x0 - box.x0) < 1e-3 and abs(ref.y0 - box.y0) < 1e-3:
+                group.append(ax)                      # a twin axis
+                break
+        else:
+            groups.append([ax])
+    for cb in colorbars:
+        cbox = cb.get_position()
+        best = None
+        for group in groups:
+            gbox = group[0].get_position()
+            overlap = min(gbox.y1, cbox.y1) - max(gbox.y0, cbox.y0)
+            gap = cbox.x0 - gbox.x1
+            if overlap > 0.3 * cbox.height and -0.02 < gap < 0.12 and (best is None or gap < best[0]):
+                best = (gap, group)
+        if best is not None:
+            best[1].append(cb)
+    groups = [g for g in groups if g[0].has_data() or g[0].texts or getattr(g[0], "name", "") == "3d"]
+    return sorted(groups, key=lambda g: (-round(g[0].get_position().y1, 2), g[0].get_position().x0))
+
+
+def export_panels(fig, out_dir, filename, dpi=200):
+    """
+    For a multi-panel figure, also save every panel on its own as <out_dir>/panels/<name>_<letter>.png.
+    The crop keeps the panel's own title, labels, legend and colour bar, at the same font size, so a
+    single panel printed at page width is far more legible than the whole multi-panel figure.
+    """
+    from matplotlib.transforms import Bbox
+    groups = _panel_groups(fig)
+    if len(groups) < 2:
+        return
+    folder = Path(out_dir) / "panels"
+    folder.mkdir(exist_ok=True)
+    renderer = fig.canvas.get_renderer()
+    stem = Path(filename).stem
+    suptitle = fig._suptitle
+    for letter, group in zip("abcdefghijklmnopqrstuvwxyz", groups):
+        others = [ax for ax in fig.axes if ax not in group]
+        try:
+            box = Bbox.union([ax.get_tightbbox(renderer) for ax in group])
+            box = box.transformed(fig.dpi_scale_trans.inverted()).padded(0.06)
+            for ax in others:                         # hide the neighbours so nothing bleeds into the crop
+                ax.set_visible(False)
+            if suptitle is not None:
+                suptitle.set_visible(False)
+            fig.savefig(folder / f"{stem}_{letter}.png", dpi=dpi, bbox_inches=box)
+        except Exception:                             # a panel that cannot be cropped is simply skipped
+            pass
+        finally:
+            for ax in others:
+                ax.set_visible(True)
+            if suptitle is not None:
+                suptitle.set_visible(True)

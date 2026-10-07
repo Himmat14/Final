@@ -1,0 +1,194 @@
+{
+"step5_deadband/smooth_deadband_mean_sma_miss.png": [
+1500,
+1040
+],
+"step1_dynamics/step1_force_budget.png": [
+1600,
+800
+],
+"step1_dynamics/panels/step1_j2_check_a.png": [
+1128,
+785
+],
+"step1_dynamics/step1_solver_crosscheck.png": [
+1600,
+800
+],
+"step5_deadband/panels/smooth_j2_mean_vs_osculating_a.png": [
+1310,
+881
+],
+"step21_deep_dive/step21_switches.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_throttle.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_hysteresis_field.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_sawtooth.png": [
+1700,
+1000
+],
+"step20_pipeline/step20_checks.png": [
+1600,
+1100
+],
+"step3_drag_noise/panels/step3_noise_estimators_a.png": [
+1186,
+860
+],
+"step3_drag_noise/panels/step3_noise_estimators_f.png": [
+1186,
+860
+],
+"step4_spectral_kalman/step4_kalman_vs_methods.png": [
+1600,
+900
+],
+"step21_deep_dive/step21_subtraction_cascade.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_sg_response.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_basis_features.png": [
+1700,
+1000
+],
+"step20_pipeline/step20_gmm_histogram.png": [
+1600,
+960
+],
+"step20_pipeline/step20_gmm_posterior.png": [
+1800,
+1500
+],
+"step6_classification/panels/gmm_contour_ellipses_a.png": [
+1622,
+1127
+],
+"step6_classification/method_comparison_bars.png": [
+2400,
+1000
+],
+"step21_deep_dive/step21_coast_tail.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_mixture_fits.png": [
+1700,
+1000
+],
+"step21_deep_dive/step21_information_criteria.png": [
+1700,
+1000
+],
+"step6_classification/panels/step6_step_stress_a.png": [
+1320,
+921
+],
+"step6_classification/panels/step6_step_stress_b.png": [
+1320,
+921
+],
+"step20_pipeline/step20_sampling_detection_edges.png": [
+1600,
+960
+],
+"step8_repetition_gp/step8_stacked_bursts.png": [
+1600,
+900
+],
+"step21_deep_dive/step21_thrust_models.png": [
+1700,
+1000
+],
+"step9_sindy_control_law/step9_coefficients.png": [
+1800,
+900
+],
+"step9_sindy_control_law/step9_switching_law.png": [
+1600,
+960
+],
+"step19_sindy_split/step19_parameters.png": [
+2000,
+1000
+],
+"step19_sindy_split/step19_forecast.png": [
+1800,
+1000
+],
+"step21_deep_dive/step21_hysteresis_rate.png": [
+1700,
+1000
+],
+"step20_pipeline/step20_forecasters.png": [
+1600,
+960
+],
+"step20_pipeline/step20_error_budget.png": [
+1600,
+960
+],
+"step20_pipeline/step20_sampling_forecast.png": [
+1600,
+960
+],
+"step20_pipeline/step20_sampling_parameters.png": [
+1600,
+960
+],
+"step22_full_forcing/step22_forecast_models.png": [
+1700,
+1000
+],
+"step22_full_forcing/step22_sma_signature.png": [
+1700,
+1000
+],
+"step10_space_weather/panels/step10_forecast_horizons_b.png": [
+1455,
+967
+],
+"step12_conjunction/step12_position_error.png": [
+1800,
+1000
+],
+"step13_tasking/step13_custody.png": [
+2000,
+1000
+],
+"step21_deep_dive/step21_pca_forecast.png": [
+1700,
+1000
+],
+"step4_spectral_kalman/step4_force_spectra.png": [
+1800,
+960
+],
+"step7_robustness/panels/step7_noise_robustness_a.png": [
+1280,
+867
+],
+"step0_tuning/panels/tuning_sg_window_a.png": [
+1381,
+927
+],
+"step19_sindy_split/panels/step19_free_decay_d.png": [
+1567,
+1031
+],
+"step16_conformal/step16_coverage.png": [
+1800,
+960
+]
+}

@@ -22,12 +22,13 @@ import numpy as np
 from deadband import settings
 from stages import (deadband_stage, derivative_gmm_stage, detection_stage, gmm_stage, heldout_stage, inverse_stage,
                     neural_net_stage, smooth_deadband_stage, spectral_stage, tuning_stage)
-from stages.common import LABEL_REPORT
+from stages.common import FIGURE_INDEX, LABEL_REPORT
 from stages import (report_step1, report_step2, report_step3, report_step3_noise, report_step4,
                     report_step4_spectroscopy, report_step5, report_step6, report_step7, report_step8, report_step9)
 from stages import (report_step10_space_weather, report_step11_observations, report_step12_conjunction,
                     report_step13_tasking, report_step14_regimes, report_step15_fleet, report_step16_conformal,
-                    report_step17_geo, report_step18_sindy_zoo, report_step19_sindy_split)
+                    report_step17_geo, report_step18_sindy_zoo, report_step19_sindy_split,
+                    report_step20_pipeline, report_step21_deep_dive, report_step22_full_forcing)
 
 # name -> (description, module), in the order they run. Every stage reads the SAME cached 400-day
 # simulations (deadband/long_run.py) and writes into the folder of the report step it belongs to,
@@ -64,8 +65,13 @@ STAGES = {
     "step16": ("Report 16 calibrated (conformal) burn-time intervals", report_step16_conformal),
     "step17": ("Report 17 GEO east-west / north-south station keeping, chemical and electric", report_step17_geo),
     "step18": ("Report 18 SINDy equation zoo: many candidate laws on three datasets", report_step18_sindy_zoo),
-    "step19": ("Report 19 thrust law vs natural dynamics learned together / apart, and with no deadband",
-               report_step19_sindy_split),
+    "step19": ("Report 19 thrust law vs natural dynamics learned together / apart, and with no deadband", report_step19_sindy_split),
+    "step20": ("Report 20 the whole chain end to end: stage accuracy, error budget, GMM anatomy, sampling, checks",
+               report_step20_pipeline),
+    "step21": ("Report 21 deep dive: subtraction vs machine epsilon, x1/x2 basis, fat tails, mixtures, SG filter, "
+               "thrust sigmoid vs GP, hysteresis state space, sawtooth, PCA of the coast", report_step21_deep_dive),
+    "step22": ("Report 22 every force (J2, drag, Moon, Sun, SRP) through the whole chain; forecast tables at all horizons",
+               report_step22_full_forcing),
 }
 
 
@@ -147,6 +153,8 @@ def main():
     sim = None   # no stage uses the old Week 4 run any more: every stage reads deadband/long_run.py
 
     results = {}
+    report_step20_pipeline.PREVIOUS = results       # the closed-form checks read this run's numbers
+    report_step22_full_forcing.PREVIOUS = results   # the horizon tables read this run's numbers
     for index, name in enumerate(args.stages, start=1):
         description, module = STAGES[name]
         print(f"[{index}/{len(args.stages)}] [{name}] {description}", flush=True)
@@ -160,6 +168,8 @@ def main():
         report = "\n".join(f"{name}: '{panel}' has no {missing}" for name, panel, missing in LABEL_REPORT)
         (out_dir / "figure_label_check.txt").write_text(report)
         print(f"\n{len(LABEL_REPORT)} chart(s) lack a title or axis label: see figure_label_check.txt")
+    (out_dir / "report").mkdir(exist_ok=True)
+    (out_dir / "report" / "figure_index.json").write_text(json.dumps(FIGURE_INDEX, indent=1))
     results_path = out_dir / "results.json"
     results_path.write_text(json.dumps(results, indent=2, default=_json_default))
     print(f"\nFigures and {results_path.name} written to {out_dir.resolve()}")

@@ -85,7 +85,15 @@ def _draw_burn_zoom(ax, p, learned):
     ax.legend(fontsize=6.5, loc="center right")
 
 
+LIB_STYLES = (("-", "o"), ("--", "s"), (":", "^"), ("-", "D"), ("--", "v"), ("-.", "P"), (":", "X"), ("-.", "*"))
+
+
+def _is_exponential(name):
+    return name.lower().startswith("6") or "exp" in name.lower()
+
+
 def _draw_free_decay(axes, studies):
+    """axes: [decay, learned laws (exponential library excluded), exponential library alone, forecast errors]."""
     d, rows, true_rate = studies["drag only"]
     axes[0].plot(d["days"][::60], d["a_true"][::60] * DU, color=NAVY, label="drag only (J2 + drag)")
     dn = studies["natural"][0]
@@ -93,21 +101,30 @@ def _draw_free_decay(axes, studies):
     axes[0].axvspan(0, TRAIN_DAYS, color=GREY, alpha=0.15, label="TRAIN (days 0-40)")
     axes[0].ticklabel_format(axis="y", useOffset=False)
     axes[0].set(xlabel="time [days]", ylabel="mean SMA [km]", title="No deadband: 51 km of free decay in 400 days")
-    axes[0].legend(fontsize=7)
+    axes[0].legend(fontsize=8)
     a_grid = np.linspace(d["a"].min(), d["a"].max(), 100)
     a0 = float(np.median(d["a"][d["days"] < TRAIN_DAYS]))
-    for (name, library), row, color in zip(S.free_libraries(a0).items(), rows, LIB_COLORS):
+    truth = -SMOOTH_CD * 2 * np.sqrt(S.MU * a_grid) * S.TO_M_PER_HOUR
+    for (name, library), row, color, (ls, marker) in zip(S.free_libraries(a0).items(), rows, LIB_COLORS, LIB_STYLES):
         theta, _ = library(a_grid)
-        axes[1].plot(a_grid * DU, theta @ np.array(row["coefficients"]) * S.TO_M_PER_HOUR, color=color, lw=1.2,
-                     label=name)
-    axes[1].plot(a_grid * DU, -SMOOTH_CD * 2 * np.sqrt(S.MU * a_grid) * S.TO_M_PER_HOUR, "k:", lw=2.5, label="true law")
-    axes[1].set(xlabel="mean SMA [km]", ylabel="da/dt [m/hour]", title="Learned laws over the whole decay (fitted on 40 days)")
-    axes[1].legend(fontsize=6)
-    for row, color in zip(rows, LIB_COLORS):
-        axes[2].plot(row["forecast_days"], np.abs(row["forecast_err_km"]) * 1000 + 1e-3, color=color, label=row["library"])
-    axes[2].set(yscale="log", xlabel="time [days]", ylabel="|SMA forecast error| [m]",
-                title="Free-running SMA forecast from day 40")
-    axes[2].legend(fontsize=6)
+        rate = theta @ np.array(row["coefficients"]) * S.TO_M_PER_HOUR
+        ax = axes[2] if _is_exponential(name) else axes[1]
+        ax.plot(a_grid * DU, rate, color=color, ls=ls, marker=marker, markevery=(LIB_STYLES.index((ls, marker)) * 3, 20),
+                ms=5, lw=1.4, label=name)
+    for ax in axes[1:3]:
+        ax.plot(a_grid * DU, truth, "k:", lw=2.5, label=r"true law $-2c_d\sqrt{\mu a}$")
+        ax.set(xlabel="mean SMA [km]", ylabel="da/dt [m/hour]")
+        ax.legend(fontsize=7.5)
+    axes[1].set_title("Learned laws over the whole decay (fitted on 40 days)")
+    axes[2].set_title("Exponential-density library on its own axis: wrong physics here")
+    for i, (row, color, (ls, marker)) in enumerate(zip(rows, LIB_COLORS, LIB_STYLES)):
+        days = np.asarray(row["forecast_days"])
+        err = np.abs(np.asarray(row["forecast_err_km"])) * 1000 + 1e-3
+        axes[3].plot(days, err, color=color, ls=ls, marker=marker, markevery=(i * 7, 60), ms=6, lw=1.4,
+                     label=row["library"])
+    axes[3].set(yscale="log", xlabel="time [days]", ylabel="|SMA forecast error| [m]",
+                title="Free-running SMA forecast from day 40 (identical laws overlap: see markers)")
+    axes[3].legend(fontsize=7.5, ncol=2, loc="lower right")
 
 
 def run(sim, out_dir):
@@ -119,10 +136,11 @@ def run(sim, out_dir):
         fig, ax = plt.subplots(figsize=(10, 5)); _draw_rate_errors(ax, rows); save(fig, folder, "step19_rate_errors.png")
         fig, ax = plt.subplots(figsize=(9, 5)); _draw_forecast(ax, rows); save(fig, folder, "step19_forecast.png")
         fig, ax = plt.subplots(figsize=(10, 5)); _draw_burn_zoom(ax, p, learned); save(fig, folder, "step19_burn_zoom.png")
-        fig, axes = plt.subplots(1, 3, figsize=(20, 5.2)); _draw_free_decay(axes, studies); save(fig, folder, "step19_free_decay.png")
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10.5)); _draw_free_decay(axes.ravel(), studies)
+        save(fig, folder, "step19_free_decay.png")
         fig, axes = plt.subplots(2, 3, figsize=(20, 10.5))
         _draw_parameters(axes[0, 0], rows); _draw_forecast(axes[0, 1], rows); _draw_burn_zoom(axes[0, 2], p, learned)
-        _draw_free_decay(axes[1], studies)
+        _draw_free_decay(list(axes[1]) + [axes[1, 2].inset_axes([0.6, 0.6, 0.38, 0.38]), axes[1, 2]], studies)
         for ax, letter in zip(axes.ravel(), "abcdef"):
             panel_label(ax, letter)
         save(fig, folder, "step19_summary.png",

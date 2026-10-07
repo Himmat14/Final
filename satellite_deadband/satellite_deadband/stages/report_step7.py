@@ -135,9 +135,14 @@ def _draw_components(ax, table):
 
 
 def _draw_training_size(ax, table):
-    for name, f1 in table.items():
-        ax.plot(TRAINING_SIZES, f1.mean(axis=1), label=name, **METHOD_STYLE[name])
-        ax.fill_between(TRAINING_SIZES, f1.min(axis=1), f1.max(axis=1), color=METHOD_COLORS[name], alpha=0.15)
+    # range over the random draws as error bars (no shading, so overlapping methods stay legible);
+    # each method is nudged sideways a little so identical curves do not hide each other
+    sizes = np.asarray(TRAINING_SIZES, dtype=float)
+    for i, (name, f1) in enumerate(table.items()):
+        x = sizes * 1.06 ** (i - (len(table) - 1) / 2)
+        mean = f1.mean(axis=1)
+        ax.errorbar(x, mean, yerr=[mean - f1.min(axis=1), f1.max(axis=1) - mean], capsize=3, elinewidth=1,
+                    label=name, **METHOD_STYLE[name])
     ax.set(xscale="log", ylim=(-0.05, 1.05), xlabel="training samples used to fit", ylabel="event F1 (TEST)",
            title="Robustness to training-set size (noise x1)")
 

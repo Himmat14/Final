@@ -129,16 +129,31 @@ def thruster_state_rate(sma, s, sma_width=SWITCH_SMA_WIDTH, switch_time=SWITCH_T
 # ---------------------------------------------------------------------------
 def smooth_deadband_rhs(cd=SMOOTH_CD, j2=J2, controlled=True, use_mean_sma=True,
                         sma_width=SWITCH_SMA_WIDTH, switch_time=SWITCH_TIME,
-                        a_lower=SMOOTH_A_LOWER, a_upper=SMOOTH_A_UPPER):
+                        a_lower=SMOOTH_A_LOWER, a_upper=SMOOTH_A_UPPER, extra_forces=(), t_offset=0.0):
     """
     Right-hand side f(t, [r, v, s]) for scipy's solve_ivp.
 
     controlled=False gives the drag-only reference orbit (s stays 0, no thrust).
     use_mean_sma=False makes the controller watch the osculating SMA instead (the J2 failure case).
+    extra_forces: any of "Moon", "Sun", "SRP" (perturbations.py), evaluated at the absolute time
+    t + t_offset (so a run integrated in chunks keeps the right Moon and Sun positions).
+    The controller still watches the J2 mean SMA: an operator does not need the third bodies to keep a band.
     """
+    from .perturbations import MU_MOON, MU_SUN, moon_position, srp_accel, sun_position, third_body_accel
+
     def rhs(t, state):
         r, v, s = state[0:3], state[3:6], state[6]
         accel = gravity_accel(r) + drag_accel(v, cd) + j2_accel(r, j2)
+        if extra_forces:
+            clock = t + t_offset
+            if "Moon" in extra_forces:
+                accel = accel + third_body_accel(r, moon_position(clock), MU_MOON)
+            if "Sun" in extra_forces or "SRP" in extra_forces:
+                r_sun = sun_position(clock)
+                if "Sun" in extra_forces:
+                    accel = accel + third_body_accel(r, r_sun, MU_SUN)
+                if "SRP" in extra_forces:
+                    accel = accel + srp_accel(r, r_sun)
         ds_dt = 0.0
         if controlled:   # a fixed choice of model, not a switch inside the dynamics
             accel = accel + a_thrust(v, s)
@@ -219,10 +234,11 @@ class SmoothDeadbandSimulation:
 def simulate_smooth_deadband(t_end, cd=SMOOTH_CD, j2=J2, controlled=True, use_mean_sma=True,
                              sma_width=SWITCH_SMA_WIDTH, switch_time=SWITCH_TIME, state0=None,
                              method=SMOOTH_SOLVER, tolerance=SMOOTH_SOLVER_TOLERANCE,
-                             a_lower=SMOOTH_A_LOWER, a_upper=SMOOTH_A_UPPER):
+                             a_lower=SMOOTH_A_LOWER, a_upper=SMOOTH_A_UPPER, extra_forces=(), t_offset=0.0):
     """Integrate [r, v, s] from 0 to `t_end` (non-dimensional) in a single solve_ivp call. No events."""
     state0 = smooth_initial_state(j2=j2) if state0 is None else state0
-    rhs = smooth_deadband_rhs(cd, j2, controlled, use_mean_sma, sma_width, switch_time, a_lower, a_upper)
+    rhs = smooth_deadband_rhs(cd, j2, controlled, use_mean_sma, sma_width, switch_time, a_lower, a_upper,
+                              extra_forces, t_offset)
     result = solve_ivp(rhs, [0.0, t_end], state0, method=method, rtol=tolerance, atol=tolerance,
                        dense_output=True)
     if not result.success:

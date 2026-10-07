@@ -101,27 +101,40 @@ class ControlledRun:
         return (throttle(self.s) > 0.5).astype(int)
 
 
-@lru_cache(maxsize=1)
-def controlled_run():
-    """The 400-day smooth-deadband run, integrated in 10-day chunks, sampled every 0.1 min."""
+def _controlled(name, extra_forces=()):
     def build():
         step = SAMPLE_STEP_S * SECONDS
         chunk = from_days(CHUNK_DAYS)
         state = smooth_initial_state()
         times, samples = [], []
         for k in range(int(np.ceil(LONG_DAYS / CHUNK_DAYS))):
-            # The dynamics do not depend on absolute time (no Moon/Sun here), so each chunk can
-            # start its clock at zero; the samples are shifted to the right absolute time below.
-            sim = simulate_smooth_deadband(chunk, state0=state)
+            # each chunk starts its own clock at zero; with Moon / Sun / SRP the forces are evaluated at the
+            # absolute time (t_offset), and the samples are shifted to the right absolute time below
+            sim = simulate_smooth_deadband(chunk, state0=state, extra_forces=extra_forces, t_offset=k * chunk)
             local = np.arange(0, chunk, step)
             times.append(local + k * chunk)
             samples.append(sim.sample(local))
             state = sim.states[:, -1]
         return dict(t=np.concatenate(times), states=np.concatenate(samples, axis=1))
-    data = _cached("controlled_run", build)
+    data = _cached(name, build)
     states = data["states"]
     return ControlledRun(t=data["t"], r=states[0:3], v=states[3:6], s=states[6],
                          mean_sma_km=mean_sma_km_series(states))
+
+
+@lru_cache(maxsize=1)
+def controlled_run():
+    """The 400-day smooth-deadband run (J2 + drag), integrated in 10-day chunks, sampled every 0.1 min."""
+    return _controlled("controlled_run")
+
+
+FULL_FORCES = ("Moon", "Sun", "SRP")
+
+
+@lru_cache(maxsize=1)
+def controlled_full_run():
+    """The same controlled run with every force: J2 + drag + Moon + Sun + SRP (step 21)."""
+    return _controlled("controlled_full_run", FULL_FORCES)
 
 
 @lru_cache(maxsize=1)

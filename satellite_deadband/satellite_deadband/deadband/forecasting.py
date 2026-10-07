@@ -101,12 +101,16 @@ def law_onsets(t0, a0, drag_grid, grid_t, lower, upper, T_net, t_max):
 
 
 def current_state(L, t0):
-    """Measured SMA at t0 (linear fit of the last 6 h of coast) or None if a burn is in progress."""
+    """
+    Measured SMA at t0 (linear fit of the last 6 h of coast, or of the last 6 samples when the cadence is
+    coarser than 1 h) or None if a burn is in progress.
+    """
     last_on = L.onsets[L.onsets <= t0]
     last_end = L.ends[L.ends <= t0]
     if last_on.size and (not last_end.size or last_end[-1] < last_on[-1]):
         return None                                                         # mid-burn
-    start = max(t0 - 6 * 3600, last_end[-1] + 600 if last_end.size else 0)
+    span = max(6 * 3600, 6 * float(np.median(np.diff(L.t))))
+    start = max(t0 - span, last_end[-1] + 600 if last_end.size else 0)
     keep = (L.t >= start) & (L.t <= t0)
     if keep.sum() < 5:
         return None

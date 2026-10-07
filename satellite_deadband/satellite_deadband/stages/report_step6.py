@@ -125,20 +125,21 @@ def _draw_horizon_f1(ax, scores, case):
     ax.legend(fontsize=7)
 
 
-def _draw_stress_f1(ax, rows):
-    """Event F1 vs sampling step for both features (line style) and every noise level (colour)."""
-    for feature, style in FEATURE_STYLES.items():
-        for scale, color in NOISE_COLORS.items():
-            mine = sorted((r for r in rows if r["feature"] == feature and r["noise_scale"] == scale),
-                          key=lambda r: r["step_s"])
-            ax.plot([r["step_s"] / 60 for r in mine], [r["f1"] for r in mine], color=color, ms=4, **style,
-                    label=f"{feature}, {scale:g} x noise")
+def _draw_stress_f1(ax, rows, feature):
+    """Event F1 vs sampling step for ONE feature, one line per noise level (one panel per feature)."""
+    markers = dict(zip(NOISE_COLORS, "osD^v"))
+    for i, (scale, color) in enumerate(NOISE_COLORS.items()):
+        mine = sorted((r for r in rows if r["feature"] == feature and r["noise_scale"] == scale),
+                      key=lambda r: r["step_s"])
+        # a small vertical offset per noise level so identical F1 = 1 lines do not hide each other
+        ax.plot([r["step_s"] / 60 for r in mine], [r["f1"] + 0.012 * (i - 2) for r in mine], color=color,
+                marker=markers[scale], ms=4, lw=1.4, label=f"{scale:g} x reference noise")
     ax.axvline(stress.BURN_MINUTES, color=GREY, lw=2, alpha=0.6)
     ax.text(stress.BURN_MINUTES * 1.05, 0.5, "one burn\n(22.8 min)", fontsize=8, color=GREY)
     ax.axhline(stress.WORKS_F1, color=GREY, ls=":", lw=1)
-    ax.set(xscale="log", ylim=(-0.05, 1.08), xlabel="sampling step [min]", ylabel="event F1 on TEST (days 40-100)",
-           title="Stress test: noisy GMM vs sampling step (solid: derivative, dashed: one-step propagation)")
-    ax.legend(fontsize=6.5, ncol=2, loc="lower left")
+    ax.set(xscale="log", ylim=(-0.08, 1.1), xlabel="sampling step [min]",
+           ylabel="event F1 on TEST (days 40-100)", title=f"Stress test, {feature} feature: F1 vs sampling step")
+    ax.legend(fontsize=8, loc="lower left")
 
 
 def _draw_stress_heatmaps(axes, rows):
@@ -263,12 +264,14 @@ def run(sim, out_dir):
         fig, ax = plt.subplots(figsize=(9, 4.5)); _draw_timing(ax, scores); save(fig, folder, "step6_timing_errors.png")
         fig = plt.figure(figsize=(17, 11))
         grid = fig.add_gridspec(2, 2)
-        _draw_stress_f1(fig.add_subplot(grid[0, 0]), stress_rows)
-        _draw_working_ranges(fig.add_subplot(grid[0, 1]), stress_ranges)
+        for column, feature in enumerate(stress.FEATURES):
+            _draw_stress_f1(fig.add_subplot(grid[0, column]), stress_rows, feature)
         heat_axes = [fig.add_subplot(grid[1, 0]), fig.add_subplot(grid[1, 1])]
         image = _draw_stress_heatmaps(heat_axes, stress_rows)
         fig.colorbar(image, ax=heat_axes, shrink=0.8, label="event F1")
         save_figure(fig, folder, "step6_step_stress.png", tight=False)   # the shared colour bar places itself
+        fig, ax = plt.subplots(figsize=(9, 4.5)); _draw_working_ranges(ax, stress_ranges)
+        save(fig, folder, "step6_step_stress_ranges.png")
         fig, ax = plt.subplots(figsize=(8, 4.5)); _draw_stress_timing(ax, stress_rows)
         save(fig, folder, "step6_step_stress_timing.png")
 
@@ -277,7 +280,7 @@ def run(sim, out_dir):
         _draw_spaces(axes[0, 1], dataset, features)
         _draw_feature_space(axes[0, 2], dataset, features["noisy"].matrix, scores["noisy"]["GMM"].model,
                             "Feature space, noisy, GMM")
-        _draw_stress_f1(axes[0, 3], stress_rows)
+        _draw_stress_f1(axes[0, 3], stress_rows, stress.FEATURES[1])
         _draw_horizon_f1(axes[1, 0], scores, "noisy")
         _draw_scores(axes[1, 1], scores)
         _draw_timing(axes[1, 2], scores)

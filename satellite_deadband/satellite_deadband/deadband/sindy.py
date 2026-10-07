@@ -58,8 +58,12 @@ class SmaData:
     burn: np.ndarray       # bool: clearly burning
 
 
-def sma_data(t, r, v, events, step_s, window=None):
-    """Mean SMA from measured r, v; its derivative; and coast / burn masks from the detected events."""
+def sma_data(t, r, v, events, step_s, window=None, edge_buffer_s=None):
+    """
+    Mean SMA from measured r, v; its derivative; and coast / burn masks from the detected events.
+    edge_buffer_s: samples this close to a detected burn edge belong to neither cluster (default: the
+    step 9 rule, which grows with the classifier's derivative window).
+    """
     window = window or tuned("sma_window")
     a = mean_sma_km_series(np.vstack([r, v])) / DU
     h = step_s * SECONDS
@@ -68,7 +72,9 @@ def sma_data(t, r, v, events, step_s, window=None):
     near_edge = np.zeros(len(t), dtype=bool)
     # the detected burn edges are smeared by half the classifier's derivative window (tuned "sg_window"),
     # so the buffer grows with it: otherwise thruster-ramp samples leak into the coast and burn clusters
-    buffer = int((EDGE_BUFFER_S + tuned("sg_window") * step_s / 2) / step_s)
+    if edge_buffer_s is None:
+        edge_buffer_s = EDGE_BUFFER_S + tuned("sg_window") * step_s / 2
+    buffer = int(edge_buffer_s / step_s)
     starts = np.flatnonzero(np.diff(events) != 0)
     for i in starts:
         near_edge[max(0, i - buffer):i + buffer + 1] = True
